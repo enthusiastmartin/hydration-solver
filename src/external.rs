@@ -1,7 +1,17 @@
 use crate::types::{Asset, AssetId, Intent, OmnipoolAsset, StableSwapAsset};
 
 // Incoming data representation that can be used over FFI if needed
-pub type DataRepr = (u8, AssetId, u128, u128, u8, (u32, u32), (u32, u32), AssetId, u128);
+pub type DataRepr = (
+    u8,
+    AssetId,
+    u128,
+    u128,
+    u8,
+    (u32, u32),
+    (u32, u32),
+    AssetId,
+    u128,
+);
 pub type IntentRepr = (u128, AssetId, AssetId, u128, u128, bool);
 
 pub fn convert_intent_repr(intents: Vec<IntentRepr>) -> Vec<Intent> {
