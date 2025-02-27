@@ -1,6 +1,6 @@
 #![allow(non_snake_case)]
 
-use crate::data::process_data;
+use crate::internal::process_data;
 use crate::problem::{AmmApprox, Direction, ICEProblem, ProblemStatus, SetupParams, FLOAT_INF};
 use crate::types::{AssetId, Balance, FloatType, Intent, ResolvedIntent};
 use clarabel::algebra::*;

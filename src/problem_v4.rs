@@ -1,4 +1,4 @@
-use crate::data::{AmmStore, OmnipoolAsset};
+use crate::internal::{AmmStore, OmnipoolAsset};
 use crate::to_f64_by_decimals;
 use crate::types::{AssetId, FloatType, Intent, IntentId};
 use clarabel::solver::SolverStatus;
@@ -6,8 +6,8 @@ use float_next_after::NextAfter;
 use ndarray::{s, Array1, Array2, ArrayBase, Axis, Ix1, OwnedRepr};
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
-
-pub const FLOAT_INF: FloatType = FloatType::INFINITY;
+use crate::constants::{DEFAULT_PROFIT_TOKEN, HUB_ASSET_ID};
+use anyhow::{anyhow, Result};
 
 #[derive(PartialEq, Eq, Copy, Clone, Debug)]
 pub enum ProblemStatus {
@@ -82,9 +82,9 @@ impl ICEProblemV4 {
 }
 
 impl ICEProblemV4 {
-	pub fn prepare(&mut self) {
+	pub fn prepare(&mut self) -> Result<()> {
 		if self.intents.len() == 0 {
-			panic!("No intents provided!");
+			return Err(anyhow!("Ice Problem: no intents provided"));
 		}
 
 		let intents_len = self.intents.len();
@@ -97,7 +97,7 @@ impl ICEProblemV4 {
 		let mut full_indices = Vec::new();
 		let mut asset_ids = BTreeSet::new();
 
-		let asset_profit = 0u32.into(); //HDX
+		let asset_profit = DEFAULT_PROFIT_TOKEN;
 		asset_ids.insert(asset_profit);
 
 		let pool_data = self.amm_store.omnipool.clone();
@@ -117,10 +117,10 @@ impl ICEProblemV4 {
 			} else {
 				full_indices.push(idx);
 			}
-			if intent.asset_in != 1u32 {
+			if intent.asset_in != HUB_ASSET_ID{
 				asset_ids.insert(intent.asset_in);
 			}
-			if intent.asset_out != 1u32 {
+			if intent.asset_out != HUB_ASSET_ID{
 				//note: this should never happened, as it is not allowed to buy lrna!
 				asset_ids.insert(intent.asset_out);
 			} else {
@@ -157,6 +157,7 @@ impl ICEProblemV4 {
 		self.force_amm_approx = None;
 		self.step_params = StepParams::default();
 		self.fee_match = 0.0005;
+		Ok(())
 	}
 
 	pub(crate) fn get_partial_intent_prices(&self) -> Vec<FloatType> {

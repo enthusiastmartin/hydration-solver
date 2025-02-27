@@ -1,7 +1,7 @@
 #![allow(non_snake_case)]
 
-use crate::data::process_data;
-use crate::problem_v4::{AmmApprox, Direction, ICEProblemV4 as ICEProblem, ProblemStatus, SetupParams, FLOAT_INF};
+use crate::internal::process_data;
+use crate::problem_v4::{AmmApprox, Direction, ICEProblemV4 as ICEProblem, ProblemStatus, SetupParams};
 use crate::types::{AssetId, Balance, FloatType, Intent, ResolvedIntent};
 use clarabel::algebra::*;
 use clarabel::solver::*;
@@ -10,9 +10,7 @@ use ndarray::{s, Array1, Array2, Axis};
 use std::collections::BTreeMap;
 use std::ops::Neg;
 use anyhow::{anyhow, Result};
-
-const ROUND_TOLERANCE: FloatType = 0.0001;
-const LRNA: AssetId = 1;
+use crate::constants::{FLOAT_INF, HUB_ASSET_ID, ROUND_TOLERANCE};
 
 fn calculate_scaling(
 	intents: &[Intent],
@@ -171,7 +169,7 @@ impl SolverV4 {
 		// atm we support only omnipool assets - let's prepare those
 		let store = process_data(pool_data);
 		let mut problem = ICEProblem::new().with_intents(intents).with_amm_store(store);
-		problem.prepare();
+		problem.prepare()?;
 
 		let (n, m, r) = (problem.n, problem.m, problem.r);
 
@@ -419,7 +417,7 @@ fn solve_inclusion_problem(
 		);
 		max_lrna_lambda_d.insert(
 			tkn.clone(),
-			p.get_asset_pool_data(*tkn).hub_reserve / scaling.get(&LRNA).unwrap() / 2.0,
+			p.get_asset_pool_data(*tkn).hub_reserve / scaling.get(&HUB_ASSET_ID).unwrap() / 2.0,
 		);
 		max_y_d.insert(tkn.clone(), *max_lrna_lambda_d.get(tkn).unwrap());
 		min_y_d.insert(tkn.clone(), -max_lrna_lambda_d.get(tkn).unwrap());
@@ -443,13 +441,13 @@ fn solve_inclusion_problem(
 			max_lambda_d.insert(tkn.clone(), -min_x_d.get(&tkn).unwrap());
 			let max_y_unscaled = max_out.get(&tkn).unwrap() * p.get_asset_pool_data(*tkn).hub_reserve
 				/ (p.get_asset_pool_data(*tkn).reserve - max_out.get(&tkn).unwrap())
-				+ max_in.get(&LRNA).unwrap();
-			max_y_d.insert(tkn.clone(), max_y_unscaled / scaling.get(&LRNA).unwrap());
+				+ max_in.get(&HUB_ASSET_ID).unwrap();
+			max_y_d.insert(tkn.clone(), max_y_unscaled / scaling.get(&HUB_ASSET_ID).unwrap());
 			min_y_d.insert(
 				tkn.clone(),
 				-max_in.get(&tkn).unwrap() * p.get_asset_pool_data(*tkn).hub_reserve
 					/ (p.get_asset_pool_data(*tkn).reserve + max_in.get(&tkn).unwrap())
-					/ scaling.get(&LRNA).unwrap(),
+					/ scaling.get(&HUB_ASSET_ID).unwrap(),
 			);
 			max_lrna_lambda_d.insert(tkn.clone(), -min_y_d.get(&tkn).unwrap());
 		}

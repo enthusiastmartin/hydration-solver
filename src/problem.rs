@@ -1,4 +1,4 @@
-use crate::data::{AmmStore, OmnipoolAsset};
+use crate::internal::{AmmStore, OmnipoolAsset};
 use crate::to_f64_by_decimals;
 use crate::types::{AssetId, FloatType, Intent, IntentId};
 use clarabel::solver::SolverStatus;

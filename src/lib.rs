@@ -1,4 +1,4 @@
-mod data;
+mod internal;
 mod problem;
 #[cfg(test)]
 mod tests;
@@ -6,6 +6,8 @@ pub mod types;
 pub mod v3;
 pub mod v4;
 mod problem_v4;
+mod constants;
+mod external;
 
 const LOG_TARGET: &str = "hydration-solver";
 
