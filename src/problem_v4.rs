@@ -41,8 +41,6 @@ pub(crate) struct ICEProblemV4 {
 
     pub amm_store: AmmStore,
 
-    pub pool_data: BTreeMap<AssetId, OmnipoolAsset>,
-
     pub n: usize, // number of assets in intents
     pub m: usize, // number of partial intents
     pub r: usize, // number of full intents
@@ -51,7 +49,7 @@ pub(crate) struct ICEProblemV4 {
 
     pub indicators: Option<Vec<usize>>,
 
-    pub asset_ids: Vec<AssetId>,
+    pub trading_asset_ids: Vec<AssetId>,
     pub partial_sell_maxs: Vec<FloatType>,
     pub initial_sell_maxs: Vec<FloatType>,
     pub partial_indices: Vec<usize>,
@@ -67,7 +65,13 @@ pub(crate) struct ICEProblemV4 {
 // Problem builder
 impl ICEProblemV4 {
     pub fn new() -> Self {
-        ICEProblemV4::default()
+        ICEProblemV4 {
+            tkn_profit: DEFAULT_PROFIT_TOKEN,
+            min_partial: 1.,
+            //fee_match: 0.0005,
+            fee_match: 0.,
+            ..Default::default()
+        }
     }
 
     pub fn with_intents(mut self, intents: Vec<Intent>) -> Self {
@@ -86,6 +90,10 @@ impl ICEProblemV4 {
         if self.intents.len() == 0 {
             return Err(anyhow!("Ice Problem: no intents provided"));
         }
+        //Ensure tkn profit is omnipool asset
+        if self.amm_store.omnipool.get(&self.tkn_profit).is_none() {
+            return Err(anyhow!("Ice Problem: tkn profit is not omnipool asset"));
+        }
 
         let intents_len = self.intents.len();
 
@@ -95,25 +103,25 @@ impl ICEProblemV4 {
         let mut partial_sell_amounts = Vec::new();
         let mut partial_indices = Vec::new();
         let mut full_indices = Vec::new();
-        let mut asset_ids = BTreeSet::new();
+        let mut trading_tkns = BTreeSet::new();
 
         let asset_profit = DEFAULT_PROFIT_TOKEN;
-        asset_ids.insert(asset_profit);
-
-        let pool_data = self.amm_store.omnipool.clone();
+        trading_tkns.insert(asset_profit);
 
         for (idx, intent) in self.intents.iter().enumerate() {
+            let asset_in_info = self.amm_store.asset_info(intent.asset_in).ok_or(anyhow!(
+                "Invalid intent - unknown token {:?}",
+                intent.asset_in
+            ))?;
+            let asset_out_info = self.amm_store.asset_info(intent.asset_out).ok_or(anyhow!(
+                "Invalid intent - unknown token {:?}",
+                intent.asset_out
+            ))?;
             intent_ids.push(intent.intent_id);
             intents.push(intent.clone());
 
-            let amount_in = to_f64_by_decimals!(
-                intent.amount_in,
-                pool_data.get(&intent.asset_in).unwrap().decimals
-            );
-            let amount_out = to_f64_by_decimals!(
-                intent.amount_out,
-                pool_data.get(&intent.asset_out).unwrap().decimals
-            );
+            let amount_in = to_f64_by_decimals!(intent.amount_in, asset_in_info.decimals);
+            let amount_out = to_f64_by_decimals!(intent.amount_out, asset_out_info.decimals);
 
             intent_amounts.push((amount_in, amount_out));
 
@@ -124,17 +132,17 @@ impl ICEProblemV4 {
                 full_indices.push(idx);
             }
             if intent.asset_in != HUB_ASSET_ID {
-                asset_ids.insert(intent.asset_in);
+                trading_tkns.insert(intent.asset_in);
             }
             if intent.asset_out != HUB_ASSET_ID {
                 //note: this should never happened, as it is not allowed to buy lrna!
-                asset_ids.insert(intent.asset_out);
+                trading_tkns.insert(intent.asset_out);
             } else {
-                debug_assert!(false, "It is not allowed to buy lrna!");
+                return Err(anyhow!("It is not allowed to buy HUB_ASSET_ID!"));
             }
         }
 
-        let n = asset_ids.len();
+        let n = trading_tkns.len();
         let m = partial_indices.len();
         let r = full_indices.len();
 
@@ -145,16 +153,13 @@ impl ICEProblemV4 {
 
         let initial_sell_maxs = partial_sell_amounts.clone();
 
-        self.tkn_profit = 0u32; // HDX
         self.intent_ids = intent_ids;
         self.intent_amounts = intent_amounts;
-        self.pool_data = pool_data.clone();
-        self.min_partial = 1.;
         self.n = n;
         self.m = m;
         self.r = r;
         self.indicators = indicators;
-        self.asset_ids = asset_ids.into_iter().collect();
+        self.trading_asset_ids = trading_tkns.into_iter().collect();
         self.partial_sell_maxs = partial_sell_amounts;
         self.initial_sell_maxs = initial_sell_maxs;
         self.partial_indices = partial_indices;
@@ -162,7 +167,6 @@ impl ICEProblemV4 {
         self.directional_flags = None;
         self.force_amm_approx = None;
         self.step_params = StepParams::default();
-        self.fee_match = 0.0005;
         Ok(())
     }
 
@@ -207,7 +211,7 @@ impl ICEProblemV4 {
 
     pub(crate) fn get_epsilon_tkn(&self) -> BTreeMap<AssetId, FloatType> {
         let mut r = BTreeMap::new();
-        for asset_id in self.asset_ids.iter() {
+        for asset_id in self.trading_asset_ids.iter() {
             let max_in = self.get_max_in()[&asset_id];
             let max_out = self.get_max_out()[&asset_id];
             let liquidity = self.get_asset_pool_data(*asset_id).reserve;
@@ -246,7 +250,7 @@ impl ICEProblemV4 {
         let scaling = self.get_scaling();
         let real_yi: Vec<FloatType> = (0..n).map(|i| x[i] * scaling[&1u32]).collect(); // Assuming 1u32 represents 'LRNA'
         let real_xi: Vec<FloatType> = self
-            .asset_ids
+            .trading_asset_ids
             .iter()
             .enumerate()
             .map(|(i, &tkn)| x[n + i] * scaling[&tkn])
@@ -254,7 +258,7 @@ impl ICEProblemV4 {
         let real_lrna_lambda: Vec<FloatType> =
             (0..n).map(|i| x[2 * n + i] * scaling[&1u32]).collect();
         let real_lambda: Vec<FloatType> = self
-            .asset_ids
+            .trading_asset_ids
             .iter()
             .enumerate()
             .map(|(i, &tkn)| x[3 * n + i] * scaling[&tkn])
@@ -297,7 +301,7 @@ impl ICEProblemV4 {
         let scaling = self.get_scaling();
         let scaled_yi: Vec<FloatType> = (0..n).map(|i| x[i] / scaling[&1u32]).collect(); // Assuming 1u32 represents 'LRNA'
         let scaled_xi: Vec<FloatType> = self
-            .asset_ids
+            .trading_asset_ids
             .iter()
             .enumerate()
             .map(|(i, &tkn)| x[n + i] / scaling[&tkn])
@@ -305,7 +309,7 @@ impl ICEProblemV4 {
         let scaled_lrna_lambda: Vec<FloatType> =
             (0..n).map(|i| x[2 * n + i] / scaling[&1u32]).collect();
         let scaled_lambda: Vec<FloatType> = self
-            .asset_ids
+            .trading_asset_ids
             .iter()
             .enumerate()
             .map(|(i, &tkn)| x[3 * n + i] / scaling[&tkn])
@@ -413,7 +417,7 @@ impl ICEProblemV4 {
     }
 
     pub(crate) fn get_asset_pool_data(&self, asset_id: AssetId) -> &OmnipoolAsset {
-        self.pool_data.get(&asset_id).unwrap()
+        self.amm_store.omnipool.get(&asset_id).unwrap()
     }
 
     pub(crate) fn price(&self, asset_a: AssetId, asset_b: AssetId) -> FloatType {
@@ -496,7 +500,7 @@ impl ICEProblemV4 {
             let intent = &self.intents[idx];
             let tkn = intent.asset_in;
             if tkn != 1u32 {
-                let liquidity = self.pool_data.get(&tkn).unwrap().reserve;
+                let liquidity = self.amm_store.omnipool.get(&tkn).unwrap().reserve;
                 partial_sell_maxes[j] = partial_sell_maxes[j].min(liquidity / 2.0);
             }
         }
@@ -545,14 +549,14 @@ impl ICEProblemV4 {
                 .collect::<Vec<_>>(),
         );
         let scaled_min_x = ndarray::Array1::from(
-            self.asset_ids
+            self.trading_asset_ids
                 .iter()
                 .enumerate()
                 .map(|(i, &tkn)| min_x[i] / scaling[&tkn])
                 .collect::<Vec<_>>(),
         );
         let scaled_max_x = ndarray::Array1::from(
-            self.asset_ids
+            self.trading_asset_ids
                 .iter()
                 .enumerate()
                 .map(|(i, &tkn)| max_x[i] / scaling[&tkn])
@@ -571,14 +575,14 @@ impl ICEProblemV4 {
                 .collect::<Vec<_>>(),
         );
         let scaled_min_lambda = ndarray::Array1::from(
-            self.asset_ids
+            self.trading_asset_ids
                 .iter()
                 .enumerate()
                 .map(|(i, &tkn)| min_lambda[i] / scaling[&tkn])
                 .collect::<Vec<_>>(),
         );
         let scaled_max_lambda = ndarray::Array1::from(
-            self.asset_ids
+            self.trading_asset_ids
                 .iter()
                 .enumerate()
                 .map(|(i, &tkn)| max_lambda[i] / scaling[&tkn])
@@ -628,7 +632,7 @@ impl StepParams {
         let mut known_flow: BTreeMap<AssetId, (FloatType, FloatType)> = BTreeMap::new();
 
         // Initialize known_flow with zero values for all assets
-        for &asset_id in problem.asset_ids.iter() {
+        for &asset_id in problem.trading_asset_ids.iter() {
             known_flow.insert(asset_id, (0.0, 0.0));
         }
 
@@ -662,7 +666,7 @@ impl StepParams {
         let mut min_in: BTreeMap<AssetId, FloatType> = BTreeMap::new();
         let mut min_out: BTreeMap<AssetId, FloatType> = BTreeMap::new();
 
-        for &asset_id in problem.asset_ids.iter() {
+        for &asset_id in problem.trading_asset_ids.iter() {
             max_in.insert(asset_id, 0.0);
             max_out.insert(asset_id, 0.0);
             min_in.insert(asset_id, 0.0);
@@ -710,12 +714,12 @@ impl StepParams {
         }
 
         let fees: BTreeMap<AssetId, FloatType> = problem
-            .asset_ids
+            .trading_asset_ids
             .iter()
             .map(|&tkn| (tkn, problem.get_asset_pool_data(tkn).fee))
             .collect();
 
-        for &tkn in problem.asset_ids.iter() {
+        for &tkn in problem.trading_asset_ids.iter() {
             *max_in.get_mut(&tkn).unwrap() = max_in[&tkn].max(0.0);
             *min_in.get_mut(&tkn).unwrap() = min_in[&tkn].max(0.0);
             *max_out.get_mut(&tkn).unwrap() = (max_out[&tkn] / (1.0 - fees[&tkn])).max(0.0);
@@ -733,7 +737,7 @@ impl StepParams {
         self.min_out = Some(min_out);
     }
     fn set_bounds(&mut self, problem: &ICEProblemV4) {
-        let n = problem.asset_ids.len();
+        let n = problem.trading_asset_ids.len();
         let mut min_x = vec![0.0; n];
         let mut max_x = vec![0.0; n];
         let mut min_lambda = vec![0.0; n];
@@ -743,7 +747,7 @@ impl StepParams {
         let mut min_lrna_lambda = vec![0.0; n];
         let mut max_lrna_lambda = vec![0.0; n];
 
-        for (i, &tkn) in problem.asset_ids.iter().enumerate() {
+        for (i, &tkn) in problem.trading_asset_ids.iter().enumerate() {
             min_x[i] = self.min_in.as_ref().unwrap()[&tkn] - self.max_out.as_ref().unwrap()[&tkn];
             max_x[i] = self.max_in.as_ref().unwrap()[&tkn] - self.min_out.as_ref().unwrap()[&tkn];
             min_lambda[i] = (-max_x[i]).max(0.0);
@@ -761,7 +765,7 @@ impl StepParams {
         }
 
         let profit_i = problem
-            .asset_ids
+            .trading_asset_ids
             .iter()
             .position(|&tkn| tkn == problem.tkn_profit)
             .unwrap();
@@ -784,14 +788,14 @@ impl StepParams {
         let mut scaling: BTreeMap<AssetId, FloatType> = BTreeMap::new();
 
         // Initialize scaling with zero values for all assets
-        for &asset_id in problem.asset_ids.iter() {
+        for &asset_id in problem.trading_asset_ids.iter() {
             scaling.insert(asset_id, 0.0);
         }
 
         // Initialize scaling for LRNA
         scaling.insert(1u32.into(), 0.0); // Assuming 1u32 represents 'LRNA'
 
-        for &tkn in problem.asset_ids.iter() {
+        for &tkn in problem.trading_asset_ids.iter() {
             let max_in = self.max_in.as_ref().unwrap()[&tkn];
             let max_out = self.max_out.as_ref().unwrap()[&tkn];
             scaling.insert(tkn, max_in.max(max_out));
@@ -821,7 +825,7 @@ impl StepParams {
         let mut amm_asset_coefs: BTreeMap<AssetId, FloatType> = BTreeMap::new();
 
         let scaling = self.scaling.as_ref().unwrap();
-        for &tkn in problem.asset_ids.iter() {
+        for &tkn in problem.trading_asset_ids.iter() {
             let omnipool_data = problem.get_asset_pool_data(tkn);
             amm_lrna_coefs.insert(tkn, scaling[&1u32.into()] / omnipool_data.hub_reserve); // Assuming 1u32 represents 'LRNA'
             amm_asset_coefs.insert(tkn, scaling[&tkn] / omnipool_data.reserve);
@@ -867,7 +871,7 @@ impl StepParams {
             }
         }
 
-        for &tkn in problem.asset_ids.iter() {
+        for &tkn in problem.trading_asset_ids.iter() {
             let known_flow = self.known_flow.as_ref().unwrap();
             let flow_in = known_flow[&tkn].0;
             let flow_out = known_flow[&tkn].1;
@@ -914,7 +918,7 @@ impl StepParams {
         } else {
             BTreeMap::new()
         };
-        for &tkn in problem.asset_ids.iter() {
+        for &tkn in problem.trading_asset_ids.iter() {
             if let Some(&flag) = directions.get(&tkn) {
                 match flag {
                     -1 => {
@@ -951,7 +955,7 @@ type A1T = ArrayBase<OwnedRepr<FloatType>, Ix1>;
 
 impl StepParams {
     fn set_tau_phi(&mut self, problem: &ICEProblemV4) {
-        let n = problem.asset_ids.len();
+        let n = problem.trading_asset_ids.len();
         let m = problem.partial_indices.len();
         let r = problem.full_indices.len();
 
@@ -961,7 +965,7 @@ impl StepParams {
         //let mut phi2 = ndarray::Array2::zeros((n + 1, r));
 
         let mut tkn_list = vec![1u32];
-        tkn_list.extend(problem.asset_ids.iter().cloned());
+        tkn_list.extend(problem.trading_asset_ids.iter().cloned());
 
         for (j, &idx) in problem.partial_indices.iter().enumerate() {
             let intent = &problem.intents[idx];
@@ -1005,7 +1009,7 @@ impl StepParams {
         // lrna_lambda_i are LRNA amounts coming out of Omnipool
         let profit_lrna_lrna_lambda_coefs: A1T = ndarray::Array::from(
             problem
-                .asset_ids
+                .trading_asset_ids
                 .iter()
                 .map(|&tkn| -problem.get_asset_pool_data(tkn).protocol_fee)
                 .collect::<Vec<_>>(),
@@ -1049,7 +1053,7 @@ impl StepParams {
 
         // leftover must be higher than required fees
         let fees: Vec<FloatType> = problem
-            .asset_ids
+            .trading_asset_ids
             .iter()
             .map(|&tkn| problem.get_asset_pool_data(tkn).fee)
             .collect();
@@ -1105,7 +1109,11 @@ impl StepParams {
         let scaled_phi = phi.slice(s![1.., m..]).to_owned() * &Array1::from(buy_scaled.clone());
         let scaled_tau = tau.slice(s![1.., m..]).to_owned() * &Array1::from(sell_amts.clone());
         let unscaled_diff = scaled_tau - scaled_phi;
-        let scalars: Vec<FloatType> = problem.asset_ids.iter().map(|&tkn| scaling[&tkn]).collect();
+        let scalars: Vec<FloatType> = problem
+            .trading_asset_ids
+            .iter()
+            .map(|&tkn| scaling[&tkn])
+            .collect();
         let un_size = unscaled_diff.shape()[0];
         let scalars = Array2::from_shape_vec((un_size, 1), scalars).unwrap();
         let i_coefs = unscaled_diff / scalars;
@@ -1130,7 +1138,7 @@ impl StepParams {
         self.profit_a = profit_A.clone();
 
         let profit_tkn_idx = problem
-            .asset_ids
+            .trading_asset_ids
             .iter()
             .position(|&tkn| tkn == problem.tkn_profit)
             .unwrap();

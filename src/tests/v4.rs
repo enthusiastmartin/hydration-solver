@@ -136,7 +136,7 @@ fn solver_should_find_solution_for_two_partial_intents() {
 }
 
 #[test]
-fn solver_should_exclude_an_intent_when_it_contains_non_existing_trade_assets() {
+fn solver_should_work_with_stableswap_intent() {
     let data = load_amm_state();
     let intents = vec![
         Intent {
@@ -189,4 +189,48 @@ fn solver_should_exclude_an_intent_when_it_contains_non_existing_trade_assets() 
         },
     ];
     assert_eq!(solution.resolved_intents, expected_solution);
+}
+
+#[test]
+fn solver_should_fail_when_it_contains_non_existing_trade_assets() {
+    let data = load_amm_state();
+    let intents = vec![
+        Intent {
+            intent_id: 0,
+            asset_in: 123344513,
+            asset_out: 5,
+            amount_in: 514888002332937478066650,
+            amount_out: 664083505362373041510455118870258,
+            partial: false,
+        },
+        Intent {
+            intent_id: 1,
+            asset_in: 20,
+            asset_out: 14,
+            amount_in: 165665617143487433531,
+            amount_out: 12177733280754553178994,
+            partial: true,
+        },
+        Intent {
+            intent_id: 2,
+            asset_in: 0,
+            asset_out: 16,
+            amount_in: 25528234672916292207,
+            amount_out: 871403327041354,
+            partial: false,
+        },
+        Intent {
+            intent_id: 3,
+            asset_in: 100,
+            asset_out: 101,
+            amount_in: 303603756622822659947591,
+            amount_out: 20555903343957624238452664953,
+            partial: false,
+        },
+    ];
+    let start = Instant::now();
+    let solution = SolverV4::solve(intents, data);
+    let duration = start.elapsed();
+    println!("Time elapsed in solve() is: {:?}", duration);
+    assert!(solution.is_err());
 }

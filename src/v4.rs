@@ -436,7 +436,7 @@ fn solve_inclusion_problem(
     f64,
     bool,
 ) {
-    let asset_list = p.asset_ids.clone();
+    let asset_list = p.trading_asset_ids.clone();
     let tkn_list = vec![1u32]
         .into_iter()
         .chain(asset_list.iter().cloned())
@@ -786,13 +786,13 @@ fn find_good_solution_unrounded(
         && status != ProblemStatus::DualInfeasible
     {
         force_amm_approx = Some(
-            p.asset_ids
+            p.trading_asset_ids
                 .iter()
                 .map(|&tkn| (tkn, AmmApprox::Full))
                 .collect(),
         );
         let amm_pcts: BTreeMap<_, _> = p
-            .asset_ids
+            .trading_asset_ids
             .iter()
             .map(|&tkn| {
                 (
@@ -802,7 +802,7 @@ fn find_good_solution_unrounded(
             })
             .collect();
 
-        for &tkn in &p.asset_ids {
+        for &tkn in &p.trading_asset_ids {
             if let Some(force_amm_approx) = force_amm_approx.as_mut() {
                 if amm_pcts[&tkn] <= 1e-6 {
                     force_amm_approx.insert(tkn, AmmApprox::Linear);
@@ -888,7 +888,7 @@ fn find_good_solution_unrounded(
             && status != ProblemStatus::DualInfeasible
         {
             let amm_pcts: BTreeMap<_, _> = p
-                .asset_ids
+                .trading_asset_ids
                 .iter()
                 .map(|&tkn| {
                     (
@@ -899,7 +899,7 @@ fn find_good_solution_unrounded(
                 .collect();
 
             approx_adjusted_ct = 0;
-            for &tkn in &p.asset_ids {
+            for &tkn in &p.trading_asset_ids {
                 if let Some(force_amm_approx) = force_amm_approx.as_mut() {
                     match force_amm_approx[&tkn] {
                         AmmApprox::Linear => {
@@ -976,7 +976,7 @@ fn find_solution_unrounded(
 ) {
     if p.get_indicators_len() as f64 + p.partial_sell_maxs.iter().sum::<f64>() == 0.0 {
         return (
-            p.asset_ids.iter().map(|&tkn| (tkn, 0.0)).collect(),
+            p.trading_asset_ids.iter().map(|&tkn| (tkn, 0.0)).collect(),
             vec![0.0; p.partial_indices.len()],
             Array2::zeros((4 * p.n + p.m, 1)),
             0.0,
@@ -987,7 +987,7 @@ fn find_solution_unrounded(
 
     //let full_intents = &p.full_intents;
     let partial_intents_len = p.partial_indices.len();
-    let asset_list = &p.asset_ids;
+    let asset_list = &p.trading_asset_ids;
     let (n, m, r) = (p.n, p.m, p.r);
 
     if partial_intents_len + p.get_indicators_len() == 0 {
@@ -1058,7 +1058,12 @@ fn find_solution_unrounded(
     let mut I_coefs = I_coefs.neg();
 
     if allow_loss {
-        let profit_i = p.asset_ids.iter().position(|&x| x == p.tkn_profit).unwrap() + 1;
+        let profit_i = p
+            .trading_asset_ids
+            .iter()
+            .position(|&x| x == p.tkn_profit)
+            .unwrap()
+            + 1;
         A3.remove_index(Axis(0), profit_i);
         I_coefs.remove_index(Axis(0), profit_i);
     }

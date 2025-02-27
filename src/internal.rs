@@ -34,6 +34,15 @@ pub(crate) struct AmmStore {
     assets: BTreeMap<AssetId, AssetInfo>,
 }
 
+impl AmmStore {
+    pub fn exists(&self, asset_id: AssetId) -> bool {
+        self.assets.contains_key(&asset_id)
+    }
+    pub fn asset_info(&self, asset_id: AssetId) -> Option<&AssetInfo> {
+        self.assets.get(&asset_id)
+    }
+}
+
 pub(crate) fn process_data(info: Vec<crate::types::Asset>) -> AmmStore {
     let mut omnipool = BTreeMap::new();
     let mut stablepools: BTreeMap<AssetId, Stablepool> = BTreeMap::new();
