@@ -4,6 +4,42 @@ use crate::v4::SolverV4;
 use std::time::Instant;
 
 #[test]
+fn simple_scenario() {
+    let intents: &str = r##"[
+  {
+    "intent_id": 0,
+    "asset_in": 33,
+    "asset_out": 28,
+    "amount_in": 1341239791268921631091765,
+    "amount_out": 1073349042192081223680,
+    "partial": true
+  },
+  {
+    "intent_id": 1,
+    "asset_in": 102,
+    "asset_out": 28,
+    "amount_in": 1692553304022051096953112,
+    "amount_out": 28494216431468577554432,
+    "partial": false
+  },
+  {
+    "intent_id": 2,
+    "asset_in": 8,
+    "asset_out": 1000765,
+    "amount_in": 226596254840150354,
+    "amount_out": 336389845986943552,
+    "partial": false
+  }
+]"##;
+
+    let intents = serde_json::from_str::<Vec<Intent>>(intents).unwrap();
+    let data = load_amm_state();
+
+    let solution = SolverV4::solve(intents, data).unwrap();
+    dbg!(solution.resolved_intents);
+}
+
+#[test]
 fn solver_should_find_solution_for_one_small_amount_partial_intent() {
     let data = load_amm_state();
     let intents = vec![Intent {
