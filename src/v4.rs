@@ -201,6 +201,8 @@ impl SolverV4 {
             .with_amm_store(store);
         problem.prepare()?;
 
+        panic!("haha");
+
         let (n, m, r) = (problem.n, problem.m, problem.r);
 
         let inf = FLOAT_INF;

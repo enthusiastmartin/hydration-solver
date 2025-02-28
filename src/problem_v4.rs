@@ -1,7 +1,7 @@
 use crate::constants::{DEFAULT_PROFIT_TOKEN, HUB_ASSET_ID};
 use crate::internal::{AmmStore, OmnipoolAsset};
 use crate::to_f64_by_decimals;
-use crate::types::{AssetId, FloatType, Intent, IntentId};
+use crate::types::{Asset, AssetId, FloatType, Intent, IntentId};
 use anyhow::{anyhow, Result};
 use clarabel::solver::SolverStatus;
 use float_next_after::NextAfter;
@@ -41,9 +41,24 @@ pub(crate) struct ICEProblemV4 {
 
     pub amm_store: AmmStore,
 
-    pub n: usize, // number of assets in intents
-    pub m: usize, // number of partial intents
-    pub r: usize, // number of full intents
+    pub all_asset_ids: Vec<AssetId>,
+    pub omnipool_asset_ids: Vec<AssetId>,
+    pub sigmas: Vec<usize>,
+    pub auxiliaries: Vec<usize>,
+
+    pub sigma_sum: usize,
+
+    pub n: usize,           // number of omnipool assets
+    pub asset_count: usize, // number of all assetsa ( N in python)
+    pub m: usize,           // number of partial intents
+    pub r: usize,           // number of full intents
+    pub s: usize,           // number of stablepools /or other type of pools
+    pub u: usize,           // Sum of auxiliaries
+
+    pub o: Array2<FloatType>,
+    pub rho: Array2<FloatType>,
+    pub psi: Array2<FloatType>,
+    pub share_indices: Vec<usize>,
 
     pub min_partial: FloatType,
 
@@ -142,9 +157,21 @@ impl ICEProblemV4 {
             }
         }
 
-        let n = trading_tkns.len();
+        let mut sigmas = Vec::new();
+        let mut ausiliaries = Vec::new();
+
+        for stablepool in self.amm_store.stablepools.iter() {
+            sigmas.push(stablepool.1.assets.len() + 1);
+            ausiliaries.push(stablepool.1.assets.len() + 1);
+        }
+
+        let n = self.amm_store.omnipool.keys().count();
         let m = partial_indices.len();
         let r = full_indices.len();
+        let s = self.amm_store.stablepools.len();
+        let u = ausiliaries.iter().sum();
+        let asset_count = self.amm_store.assets.len();
+        let sigma_sum = sigmas.iter().sum();
 
         // this comes from the initial solution which we skipped,
         // so we intened to resolve all full intents
@@ -158,6 +185,12 @@ impl ICEProblemV4 {
         self.n = n;
         self.m = m;
         self.r = r;
+        self.s = s;
+        self.u = u;
+        self.asset_count = asset_count;
+        self.sigma_sum = sigma_sum;
+        self.sigmas = sigmas;
+        self.auxiliaries = ausiliaries;
         self.indicators = indicators;
         self.trading_asset_ids = trading_tkns.into_iter().collect();
         self.partial_sell_maxs = partial_sell_amounts;
@@ -167,7 +200,45 @@ impl ICEProblemV4 {
         self.directional_flags = None;
         self.force_amm_approx = None;
         self.step_params = StepParams::default();
+        self.all_asset_ids = self.amm_store.assets.keys().cloned().collect();
+        self.omnipool_asset_ids = self.amm_store.omnipool.keys().cloned().collect();
+
+        self.set_indicator_matrices();
         Ok(())
+    }
+
+    pub fn set_indicator_matrices(&mut self) {
+        let mut o = Array2::<f64>::zeros((self.asset_count, self.n));
+        let mut rho = Array2::<f64>::zeros((self.asset_count, self.sigma_sum));
+        let mut psi = Array2::<f64>::zeros((self.asset_count, self.sigma_sum));
+
+        for (i, &tkn) in self.all_asset_ids.iter().enumerate() {
+            if let Some(j) = self.omnipool_asset_ids.iter().position(|&x| x == tkn) {
+                o[(i, j)] = 1.0;
+            }
+        }
+
+        let mut share_indices = Vec::new();
+        let mut offset = 0;
+
+        for (pool_id, amm) in &self.amm_store.stablepools {
+            if let Some(i) = self.all_asset_ids.iter().position(|&x| x == *pool_id) {
+                share_indices.push(offset);
+                rho[(i, offset)] = 1.0;
+
+                for (k, &tkn) in amm.assets.iter().enumerate() {
+                    if let Some(i) = self.all_asset_ids.iter().position(|&x| x == tkn) {
+                        psi[(i, offset + k + 1)] = 1.0;
+                    }
+                }
+                offset += amm.assets.len() + 1;
+            }
+        }
+
+        self.o = o;
+        self.rho = rho;
+        self.psi = psi;
+        self.share_indices = share_indices;
     }
 
     pub(crate) fn get_partial_intent_prices(&self) -> Vec<FloatType> {

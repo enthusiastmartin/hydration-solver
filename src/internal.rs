@@ -30,8 +30,8 @@ pub(crate) struct AssetInfo {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct AmmStore {
     pub(crate) omnipool: BTreeMap<AssetId, OmnipoolAsset>,
-    stablepools: BTreeMap<AssetId, Stablepool>,
-    assets: BTreeMap<AssetId, AssetInfo>,
+    pub(crate) stablepools: BTreeMap<AssetId, Stablepool>,
+    pub(crate) assets: BTreeMap<AssetId, AssetInfo>,
 }
 
 impl AmmStore {
