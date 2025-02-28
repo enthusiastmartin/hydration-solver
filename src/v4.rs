@@ -201,21 +201,25 @@ impl SolverV4 {
             .with_amm_store(store);
         problem.prepare()?;
 
-        panic!("haha");
+        let (n, m, r, sigma) = (problem.n, problem.m, problem.r, problem.sigma_sum);
 
-        let (n, m, r) = (problem.n, problem.m, problem.r);
+        dbg!(n, m, r, sigma);
+
+        dbg!(problem.indicators);
 
         let inf = FLOAT_INF;
 
-        let k_milp = 4 * n + m + r;
+        let k_milp = 4 * n + 3 * sigma + m + r;
         let mut Z_L = -inf;
         let mut Z_U = inf;
         let mut best_status = ProblemStatus::NotSolved;
 
-        let mut y_best: Vec<usize> = Vec::new();
-        let mut best_intent_deltas: Vec<FloatType> = Vec::new(); // m size
-        let mut best_amm_deltas: BTreeMap<AssetId, FloatType> = BTreeMap::new(); // n size
-        let milp_ob = -inf;
+        let mut y_best: Vec<usize> = Vec::new(); //TODO: this seems to be different
+        let mut best_intent_deltas: Vec<FloatType> = Vec::with_capacity(m); // m size
+        let mut best_omnipool_deltas: BTreeMap<AssetId, FloatType> = BTreeMap::new(); // should be m size
+
+        let mut best_amm_deltas: BTreeMap<AssetId, FloatType> = BTreeMap::new(); // should be m size
+                                                                                 //let milp_ob = -inf;
 
         // Force small 	trades to execute
         // note this comes from initial solution which we skip for now
@@ -231,7 +235,7 @@ impl SolverV4 {
             .iter()
             .enumerate()
             .filter(|&(_, &val)| val == 1)
-            .map(|(idx, _)| idx + 4 * n + m)
+            .map(|(idx, _)| idx + 4 * n + 3 * sigma + m)
             .collect();
 
         let mut new_a = Array2::<f64>::zeros((1, k_milp));
@@ -245,7 +249,7 @@ impl SolverV4 {
         let mut Z_U_archive = vec![];
         let mut Z_L_archive = vec![];
         let indicators = problem.get_indicators().unwrap_or(vec![0; r]);
-        let mut x_list = Array2::<f64>::zeros((0, 4 * n + m));
+        let mut x_list = Array2::<f64>::zeros((0, 4 * n + 3 * sigma + m));
 
         let mut iter_indicators = indicators.clone();
 
