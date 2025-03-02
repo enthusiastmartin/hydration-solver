@@ -1512,8 +1512,11 @@ fn find_solution_unrounded(
 
     let A4_trimmed = A4.select(Axis(1), &indices_to_keep);
 
-    //TODO: continue with A5
+    let (A5_trimmed, b5, cones5) = p.get_stableswap_bounds(Some(indices_to_keep.clone()));
 
+    // TODO: continue from here with A6 and A7
+
+    /*
     let mut A5 = Array2::<f64>::zeros((0, k));
     let mut A6 = Array2::<f64>::zeros((0, k));
     let mut A7 = Array2::<f64>::zeros((0, k));
@@ -1556,6 +1559,7 @@ fn find_solution_unrounded(
     let cone5 = NonnegativeConeT(A5.shape()[0]);
     let cone6 = NonnegativeConeT(A6.shape()[0]);
     let cone7 = ZeroConeT(A7.shape()[0]);
+     */
 
     /*
     let A = ndarray::concatenate![

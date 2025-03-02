@@ -18,8 +18,19 @@ pub(crate) struct Stablepool {
     pub pool_id: AssetId,
     pub assets: Vec<AssetId>,
     pub reserves: Vec<FloatType>,
+    pub shares: FloatType,
+    pub d: FloatType,
     pub fee: FloatType,
     pub amplification: u128,
+}
+
+impl Stablepool {
+    pub fn ann(&self) -> FloatType {
+        self.amplification as f64 * self.assets.len() as f64
+    }
+    pub fn reserve_sum(&self) -> FloatType {
+        self.reserves.iter().sum()
+    }
 }
 
 #[derive(Clone, Debug)]

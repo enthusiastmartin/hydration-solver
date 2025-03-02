@@ -3,7 +3,9 @@ use crate::internal::{AmmStore, OmnipoolAsset};
 use crate::to_f64_by_decimals;
 use crate::types::{Asset, AssetId, FloatType, Intent, IntentId};
 use anyhow::{anyhow, Result};
-use clarabel::solver::{SolverStatus, SupportedConeT};
+use clarabel::solver::{
+    ExponentialConeT, NonnegativeConeT, SolverStatus, SupportedConeT, ZeroConeT,
+};
 use float_next_after::NextAfter;
 use ndarray::{s, Array1, Array2, ArrayBase, Axis, Ix1, OwnedRepr};
 use std::collections::btree_map::Entry;
@@ -309,6 +311,14 @@ impl ICEProblemV4 {
             r.insert(*asset_id, epsilon);
         }
         r
+    }
+
+    pub fn get_amm_approx(&self, amm_idx: usize) -> Vec<AmmApprox> {
+        if let Some(approx) = self.force_amm_approx.as_ref() {
+            approx[amm_idx].clone()
+        } else {
+            panic!("No amm approx found!");
+        }
     }
 }
 
@@ -619,55 +629,51 @@ impl ICEProblemV4 {
         let b = self.get_b();
         let share_indices = self.share_indices.clone();
 
-        for (j, amm) in self.amm_store.stablepools.iter() {
+        for (j, (pool_id, amm)) in self.amm_store.stablepools.iter().enumerate() {
             let l = share_indices[j];
-            let ann = amm.ann;
+            let ann = amm.ann();
             let s0 = amm.shares;
             let d0 = amm.d;
             let n_amm = amm.assets.len();
-            let sum_assets = amm.assets.iter().map(|tkn| amm.liquidity[tkn]).sum();
+            let sum_assets = amm.reserve_sum();
             let denom = sum_assets - d0 * (1. - 1. / ann);
-            let approx = self.get_omnipool_approx(amm.id);
+            let approx = self.get_amm_approx(j);
 
             let mut a5j = Array2::<FloatType>::zeros((0, k));
             let mut b5j = Array1::<FloatType>::zeros(0);
 
-            if approx == AmmApprox::Linear {
-                let mut a5jt = Array2::<FloatType>::zeros((1, k));
-                a5jt[[0, 4 * n + 2 * sigma + l]] = 1.;
-                a5jt[[0, 4 * n + l]] = (1. + d0 / denom) * c[l] / s0;
+            if approx[0] == AmmApprox::Linear {
+                a5j = Array2::<FloatType>::zeros((1, k));
+                a5j[[0, 4 * n + 2 * sigma + l]] = 1.;
+                a5j[[0, 4 * n + l]] = (1. + d0 / denom) * c[l] / s0;
                 for t in 1..=n_amm {
-                    a5jt[[0, 4 * n + l + t]] = -b[l + t] / denom;
+                    a5j[[0, 4 * n + l + t]] = -b[l + t] / denom;
                 }
-                let b5jt = Array1::<FloatType>::zeros(1);
+                b5j = Array1::<FloatType>::zeros(1);
                 cones5.push(ZeroConeT(1));
-                a5j = a5j.vstack(&a5jt);
-                b5j = b5j.append(&b5jt);
             } else {
-                let mut a5jt = Array2::<FloatType>::zeros((3, k));
-                a5jt[[0, 4 * n + 2 * sigma + l]] = -1.;
-                a5jt[[1, 4 * n + l]] = -c[l] / s0;
-                a5jt[[1, 4 * n + l]] = 1.;
-                a5jt[[2, 4 * n + l]] = d0 * c[l] / denom / s0;
+                a5j = Array2::<FloatType>::zeros((3, k));
+                a5j[[0, 4 * n + 2 * sigma + l]] = -1.;
+                a5j[[1, 4 * n + l]] = -c[l] / s0;
+                a5j[[1, 4 * n + l]] = 1.;
+                a5j[[2, 4 * n + l]] = d0 * c[l] / denom / s0;
                 for t in 1..=n_amm {
-                    a5jt[[2, 4 * n + l + t]] = -b[l + t] / denom;
+                    a5j[[2, 4 * n + l + t]] = -b[l + t] / denom;
                 }
-                let b5jt = Array1::<FloatType>::zeros(3);
+                b5j = Array1::<FloatType>::zeros(3);
                 cones5.push(ExponentialConeT());
-                a5j = a5j.vstack(&a5jt);
-                b5j = b5j.append(&b5jt);
             }
             for t in 1..=n_amm {
-                let x0 = amm.liquidity[&amm.assets[t - 1]];
-                if approx == AmmApprox::Linear {
+                let x0 = amm.reserves[t - 1];
+                if approx[t] == AmmApprox::Linear {
                     let mut a5jt = Array2::<FloatType>::zeros((1, k));
                     a5jt[[0, 4 * n + 2 * sigma + l + t]] = 1.;
                     a5jt[[0, 4 * n + l]] = c[l] / s0;
                     a5jt[[0, 4 * n + l + t]] = -b[l + t] / x0;
                     let b5jt = Array1::<FloatType>::zeros(1);
                     cones5.push(ZeroConeT(1));
-                    a5j = a5j.vstack(&a5jt);
-                    b5j = b5j.append(&b5jt);
+                    a5j = ndarray::concatenate![Axis(0), a5j, a5jt];
+                    b5j = b5j.append(Axis(0), &b5jt);
                 } else {
                     let mut a5jt = Array2::<FloatType>::zeros((3, k));
                     a5jt[[0, 4 * n + 2 * sigma + l + t]] = -1.;
@@ -676,8 +682,8 @@ impl ICEProblemV4 {
                     a5jt[[2, 4 * n + l + t]] = -b[l + t] / x0;
                     let b5jt = Array1::<FloatType>::zeros(3);
                     cones5.push(ExponentialConeT());
-                    a5j = a5j.vstack(&a5jt);
-                    b5j = b5j.append(&b5jt);
+                    a5j = ndarray::concatenate![Axis(0), a5j, a5jt];
+                    b5j = b5j.append(Axis(0), &b5jt);
                 }
             }
             let mut a5j_final = Array2::<FloatType>::zeros((1, k));
@@ -686,8 +692,9 @@ impl ICEProblemV4 {
             }
             let b5j_final = Array1::<FloatType>::zeros(1);
             cones5.push(NonnegativeConeT(1));
-            a5 = a5.vstack(&a5j);
-            b5 = b5.append(&b5j);
+            a5 = ndarray::concatenate![Axis(0), a5, a5j, a5j_final];
+            b5 = ndarray::concatenate![Axis(0), b5, b5j, b5j_final];
+            //b5 = b5.append(&b5j);
         }
         (a5.select(Axis(1), &indices_to_keep), b5, cones5)
     }
