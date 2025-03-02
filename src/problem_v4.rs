@@ -3,7 +3,7 @@ use crate::internal::{AmmStore, OmnipoolAsset};
 use crate::to_f64_by_decimals;
 use crate::types::{Asset, AssetId, FloatType, Intent, IntentId};
 use anyhow::{anyhow, Result};
-use clarabel::solver::SolverStatus;
+use clarabel::solver::{SolverStatus, SupportedConeT};
 use float_next_after::NextAfter;
 use ndarray::{s, Array1, Array2, ArrayBase, Axis, Ix1, OwnedRepr};
 use std::collections::btree_map::Entry;
@@ -70,8 +70,13 @@ pub(crate) struct ICEProblemV4 {
     pub partial_indices: Vec<usize>,
     pub full_indices: Vec<usize>,
 
-    pub directional_flags: Option<BTreeMap<AssetId, i8>>,
-    pub force_amm_approx: Option<BTreeMap<AssetId, AmmApprox>>,
+    pub omnipool_directional_flags: Option<BTreeMap<AssetId, i8>>,
+    pub amm_directional_flags: Option<BTreeMap<AssetId, i8>>,
+    pub force_omnipool_approx: Option<BTreeMap<AssetId, AmmApprox>>,
+    pub force_amm_approx: Option<Vec<Vec<AmmApprox>>>,
+
+    pub last_omnipool_deltas: Option<BTreeMap<AssetId, FloatType>>,
+    pub last_amm_deltas: Option<BTreeMap<AssetId, FloatType>>,
 
     pub step_params: StepParams,
     pub fee_match: FloatType,
@@ -197,7 +202,7 @@ impl ICEProblemV4 {
         self.initial_sell_maxs = initial_sell_maxs;
         self.partial_indices = partial_indices;
         self.full_indices = full_indices;
-        self.directional_flags = None;
+        self.omnipool_directional_flags = None;
         self.force_amm_approx = None;
         self.step_params = StepParams::default();
         self.all_asset_ids = self.amm_store.assets.keys().cloned().collect();
@@ -267,8 +272,22 @@ impl ICEProblemV4 {
             .collect()
     }
 
-    pub(crate) fn get_amm_approx(&self, asset_id: AssetId) -> AmmApprox {
-        if let Some(approx) = self.force_amm_approx.as_ref() {
+    pub fn get_full_intents(&self) -> Vec<&Intent> {
+        self.full_indices
+            .iter()
+            .map(|&idx| &self.intents[idx])
+            .collect()
+    }
+
+    pub fn get_partial_intents(&self) -> Vec<&Intent> {
+        self.partial_indices
+            .iter()
+            .map(|&idx| &self.intents[idx])
+            .collect()
+    }
+
+    pub(crate) fn get_omnipool_approx(&self, asset_id: AssetId) -> AmmApprox {
+        if let Some(approx) = self.force_omnipool_approx.as_ref() {
             *approx.get(&asset_id).unwrap_or(&AmmApprox::None)
         } else {
             AmmApprox::None
@@ -308,6 +327,26 @@ impl ICEProblemV4 {
             .as_ref()
             .unwrap()
             .clone()
+    }
+    pub fn get_directions(&self) -> (BTreeMap<AssetId, Direction>, Vec<Vec<Direction>>) {
+        (
+            self.step_params
+                .omnipool_directions
+                .as_ref()
+                .unwrap()
+                .clone(),
+            self.step_params.amm_directions.as_ref().unwrap().clone(),
+        )
+    }
+
+    pub fn get_tkn_liquidity(&self, tkn: AssetId) -> FloatType {
+        if self.is_omnipool_asset(tkn) {
+            self.amm_store.omnipool.get(&tkn).unwrap().reserve
+        } else {
+            panic!("Not implemented yet!");
+            self.amm_store.stablepools.get(&tkn).unwrap().reserves[0]
+        }
+        panic!("Unknown token!");
     }
 }
 
@@ -357,11 +396,11 @@ impl ICEProblemV4 {
     pub(crate) fn get_profit_A(&self) -> Array2<FloatType> {
         self.step_params.profit_a.as_ref().cloned().unwrap()
     }
-    pub(crate) fn get_amm_asset_coefs(&self) -> &BTreeMap<AssetId, FloatType> {
-        self.step_params.amm_asset_coefs.as_ref().unwrap()
+    pub(crate) fn get_omnipool_asset_coefs(&self) -> &BTreeMap<AssetId, FloatType> {
+        self.step_params.omnipool_asset_coefs.as_ref().unwrap()
     }
-    pub(crate) fn get_amm_lrna_coefs(&self) -> &BTreeMap<AssetId, FloatType> {
-        self.step_params.amm_lrna_coefs.as_ref().unwrap()
+    pub(crate) fn get_omnipool_lrna_coefs(&self) -> &BTreeMap<AssetId, FloatType> {
+        self.step_params.omnipool_lrna_coefs.as_ref().unwrap()
     }
     pub fn get_scaled_x(&self, x: Vec<FloatType>) -> Vec<FloatType> {
         let n = self.n;
@@ -407,17 +446,271 @@ impl ICEProblemV4 {
         scaled_x
     }
 }
+/*
+implement this for problem
+
+def _get_leftover_bounds(p, allow_loss, indices_to_keep=None):
+   k = 4 * p.n + 2 * p.sigma + p.u + p.m
+   profit_A = p.get_profit_A()
+   A3 = -profit_A[:, :k]
+   I_coefs = -profit_A[:, k:]
+   # if we want to allow a loss in tkn_profit, we remove the appropriate row
+   if allow_loss:
+       profit_i = p.asset_list.index(p.tkn_profit)
+       A3 = np.delete(A3, profit_i+1, axis=0)
+       I_coefs = np.delete(I_coefs, profit_i+1, axis=0)
+   A3_trimmed = A3[:, indices_to_keep] if indices_to_keep is not None else A3
+   if p.r == 0:
+       b3 = np.zeros(A3_trimmed.shape[0])
+   else:
+       b3 = -I_coefs @ p.I
+   return A3_trimmed, b3
+*/
+
+impl ICEProblemV4 {
+    pub(crate) fn get_leftover_bounds(
+        &self,
+        allow_loss: bool,
+        indices_to_keep: Option<Vec<usize>>,
+    ) -> (Array2<FloatType>, Array1<FloatType>) {
+        let k = 4 * self.n + 2 * self.sigma_sum + self.u + self.m;
+        let profit_a = self.get_profit_A();
+        let mut a3 = -profit_a.slice(s![.., ..k]);
+        let mut i_coefs = -profit_a.slice(s![.., k..]);
+        if allow_loss {
+            //TODO: remove axis somehow
+            let profit_i = self
+                .all_asset_ids
+                .iter()
+                .position(|&x| x == self.tkn_profit)
+                .unwrap();
+            //a3 = a3.remove_axis(Axis(profit_i));
+            //i_coefs = i_coefs.remove_axis(Axis(0));
+        }
+        let a3_trimmed = if let Some(indices) = indices_to_keep {
+            a3.slice(s![.., indices]).to_owned()
+        } else {
+            a3.to_owned()
+        };
+        let b3 = if self.r == 0 {
+            Array1::zeros(a3_trimmed.shape()[0])
+        } else {
+            -i_coefs.dot(&self.step_params.I)
+        };
+        (a3_trimmed, b3)
+    }
+}
+
+/*
+implement this for problem
+
+
+def _get_stableswap_bounds(p, indices_to_keep=None):
+    # CFMM invariants must be respected
+    n, sigma, u, m, N = p.n, p.sigma, p.u, p.m, p.N
+    k = 4 * n + 2 * sigma + u + m
+
+    A5 = np.zeros((0, k))
+    b5 = np.array([])
+    cones5 = []
+    C = p.get_C()
+    B = p.get_B()
+    share_indices = p.get_share_indices()
+    for j, amm in enumerate(p.amm_list):
+        if not isinstance(amm, StableSwapPoolState):
+            raise
+        l = share_indices[j]
+        ann = amm.ann
+        s0 = amm.shares
+        D0 = amm.d
+        n_amm = len(amm.asset_list)
+        sum_assets = sum([amm.liquidity[tkn] for tkn in amm.asset_list])
+        # TODO: think about indexing of auxiliary variables
+        approx = p.get_amm_approx(j)
+        # D0' = D_0 * (1 - 1/ann)
+        D0_prime = D0 * (1 - 1 / ann)
+        # a0 ~= -delta_s/s0 + [1 / (sum x_i^0 - D0') * sum delta_x_i - (D0'/s0) / (sum x_i^0 - D0') * delta_s]
+        denom = sum_assets - D0_prime
+        if approx[0] == "linear":
+            A5j = np.zeros((1, k))
+            A5j[0, 4 * n + 2 * sigma + l] = 1  # a_{j,0} coefficient
+            A5j[0, 4 * n + l] = (1 + D0_prime / denom) * C[l] / s0  # delta_s coefficient
+            for t in range(1, n_amm + 1):
+                A5j[0, 4*n + l + t] = -B[l+t] / denom  # delta_x_i coefficient
+            b5j = np.array([0])
+            cones5.append(cb.ZeroConeT(1))
+        else:
+            A5j = np.zeros((3, k))
+            b5j = np.array([0, 0, 0])
+            # x = a_{j,0}
+            A5j[0, 4*n + 2*sigma + l] = -1
+            # y = 1 + C_jS_j / s_0
+            A5j[1, 4*n + l] = -C[l] / s0
+            b5j[1] = 1
+            # z = An^n / D_0 sum(x_i^0 + B_i X_i) + (1 - An^n)(1 + C_jS_j / s_0)
+            A5j[2, 4 * n + l] = D0_prime * C[l] / denom / s0
+            for t in range(1, n_amm + 1):
+                A5j[2, 4*n + l + t] = -B[l+t] / denom
+            b5j[2] = 1
+            cones5.append(cb.ExponentialConeT())
+
+        for t in range(1, n_amm + 1):
+            x0 = amm.liquidity[amm.asset_list[t - 1]]
+            if approx[t] == "linear":
+                A5jt = np.zeros((1, k))
+                A5jt[0, 4 * n + 2 * sigma + l + t] = 1  # a_{j,0} coefficient
+                A5jt[0, 4 * n + l] = C[l] / s0  # delta_s coefficient
+                A5jt[0, 4 * n + l + t] = -B[l + t] / x0  # delta_x_i coefficient
+                b5jt = np.array([0])
+                cone5jt = cb.ZeroConeT(1)
+            else:
+                A5jt = np.zeros((3, k))
+                b5jt = np.zeros(3)
+                # x = a_{j,t}
+                A5jt[0, 4 * n + 2 * sigma + l + t] = -1
+                # y = 1 + C_jS_j / s_0
+                A5jt[1, 4 * n + l] = -C[l] / s0
+                b5jt[1] = 1
+                # z = (x_t^0 + B_t X_t) / D_0
+                A5jt[2, 4 * n + l + t] = -B[l + t] / x0
+                b5jt[2] = 1
+                cone5jt = cb.ExponentialConeT()
+            cones5.append(cone5jt)
+            A5j = np.vstack([A5j, A5jt])
+            b5j = np.append(b5j, np.array(b5jt))
+
+        A5j_final = np.zeros((1, k))
+        # coef = 0
+        # for tkn in amm.asset_list:
+        #     coef += np.log(n_amm * amm.liquidity[tkn] / D0)
+        # coef += np.log(c)
+        # A5j_final[0, 4 * n + l] = -coef * C[l] / s0
+        for t in range(n_amm + 1):
+            A5j_final[0, 4 * n + 2 * sigma + l + t] = -1
+        # b5j_final = np.array([coef])
+        b5j_final = np.array([0])
+        cones5.append(cb.NonnegativeConeT(1))
+
+        A5 = np.vstack([A5, A5j, A5j_final])
+        b5 = np.concatenate([b5, b5j, b5j_final])
+    return A5[:, indices_to_keep], b5, cones5
+ */
+
+impl ICEProblemV4 {
+    pub(crate) fn get_stableswap_bounds(
+        &self,
+        indices_to_keep: Vec<usize>,
+    ) -> (
+        Array2<FloatType>,
+        Array1<FloatType>,
+        Vec<SupportedConeT<FloatType>>,
+    ) {
+        let n = self.n;
+        let sigma = self.sigma_sum;
+        let u = self.u;
+        let m = self.m;
+        let k = 4 * n + 2 * sigma + u + m;
+
+        let mut a5 = Array2::<FloatType>::zeros((0, k));
+        let mut b5 = Array1::<FloatType>::zeros(0);
+        let mut cones5 = Vec::new();
+
+        let c = self.get_c();
+        let b = self.get_b();
+        let share_indices = self.share_indices.clone();
+
+        for (j, amm) in self.amm_store.stablepools.iter() {
+            let l = share_indices[j];
+            let ann = amm.ann;
+            let s0 = amm.shares;
+            let d0 = amm.d;
+            let n_amm = amm.assets.len();
+            let sum_assets = amm.assets.iter().map(|tkn| amm.liquidity[tkn]).sum();
+            let denom = sum_assets - d0 * (1. - 1. / ann);
+            let approx = self.get_omnipool_approx(amm.id);
+
+            let mut a5j = Array2::<FloatType>::zeros((0, k));
+            let mut b5j = Array1::<FloatType>::zeros(0);
+
+            if approx == AmmApprox::Linear {
+                let mut a5jt = Array2::<FloatType>::zeros((1, k));
+                a5jt[[0, 4 * n + 2 * sigma + l]] = 1.;
+                a5jt[[0, 4 * n + l]] = (1. + d0 / denom) * c[l] / s0;
+                for t in 1..=n_amm {
+                    a5jt[[0, 4 * n + l + t]] = -b[l + t] / denom;
+                }
+                let b5jt = Array1::<FloatType>::zeros(1);
+                cones5.push(ZeroConeT(1));
+                a5j = a5j.vstack(&a5jt);
+                b5j = b5j.append(&b5jt);
+            } else {
+                let mut a5jt = Array2::<FloatType>::zeros((3, k));
+                a5jt[[0, 4 * n + 2 * sigma + l]] = -1.;
+                a5jt[[1, 4 * n + l]] = -c[l] / s0;
+                a5jt[[1, 4 * n + l]] = 1.;
+                a5jt[[2, 4 * n + l]] = d0 * c[l] / denom / s0;
+                for t in 1..=n_amm {
+                    a5jt[[2, 4 * n + l + t]] = -b[l + t] / denom;
+                }
+                let b5jt = Array1::<FloatType>::zeros(3);
+                cones5.push(ExponentialConeT());
+                a5j = a5j.vstack(&a5jt);
+                b5j = b5j.append(&b5jt);
+            }
+            for t in 1..=n_amm {
+                let x0 = amm.liquidity[&amm.assets[t - 1]];
+                if approx == AmmApprox::Linear {
+                    let mut a5jt = Array2::<FloatType>::zeros((1, k));
+                    a5jt[[0, 4 * n + 2 * sigma + l + t]] = 1.;
+                    a5jt[[0, 4 * n + l]] = c[l] / s0;
+                    a5jt[[0, 4 * n + l + t]] = -b[l + t] / x0;
+                    let b5jt = Array1::<FloatType>::zeros(1);
+                    cones5.push(ZeroConeT(1));
+                    a5j = a5j.vstack(&a5jt);
+                    b5j = b5j.append(&b5jt);
+                } else {
+                    let mut a5jt = Array2::<FloatType>::zeros((3, k));
+                    a5jt[[0, 4 * n + 2 * sigma + l + t]] = -1.;
+                    a5jt[[1, 4 * n + l]] = -c[l] / s0;
+                    a5jt[[1, 4 * n + l]] = 1.;
+                    a5jt[[2, 4 * n + l + t]] = -b[l + t] / x0;
+                    let b5jt = Array1::<FloatType>::zeros(3);
+                    cones5.push(ExponentialConeT());
+                    a5j = a5j.vstack(&a5jt);
+                    b5j = b5j.append(&b5jt);
+                }
+            }
+            let mut a5j_final = Array2::<FloatType>::zeros((1, k));
+            for t in 0..=n_amm {
+                a5j_final[[0, 4 * n + 2 * sigma + l + t]] = -1.;
+            }
+            let b5j_final = Array1::<FloatType>::zeros(1);
+            cones5.push(NonnegativeConeT(1));
+            a5 = a5.vstack(&a5j);
+            b5 = b5.append(&b5j);
+        }
+        (a5.select(Axis(1), &indices_to_keep), b5, cones5)
+    }
+}
 
 #[derive(Clone)]
 pub struct SetupParams {
     pub indicators: Option<Vec<usize>>,
-    pub flags: Option<BTreeMap<AssetId, i8>>,
+    pub omnipool_flags: Option<BTreeMap<AssetId, i8>>,
+    pub amm_flags: Option<BTreeMap<AssetId, i8>>,
     pub sell_maxes: Option<Vec<FloatType>>,
+    pub force_omnipool_approx: Option<BTreeMap<AssetId, AmmApprox>>,
+    #[deprecated]
     pub force_amm_approx: Option<BTreeMap<AssetId, AmmApprox>>,
+    pub force_amm_approx_vec: Option<Vec<Vec<AmmApprox>>>,
     pub rescale: bool,
     pub clear_sell_maxes: bool,
     pub clear_indicators: bool,
+    pub clear_omnipool_approx: bool,
     pub clear_amm_approx: bool,
+
+    pub omnipool_deltas: Option<BTreeMap<AssetId, FloatType>>,
+    pub amm_deltas: Option<BTreeMap<AssetId, FloatType>>,
 }
 
 #[derive(PartialEq, Eq, Copy, Clone, Debug)]
@@ -432,13 +725,15 @@ impl SetupParams {
     pub fn new() -> Self {
         SetupParams {
             indicators: None,
-            flags: None,
+            omnipool_flags: None,
             sell_maxes: None,
+            force_omnipool_approx: None,
             force_amm_approx: None,
+            force_amm_approx_vec: None,
             rescale: true,
             clear_sell_maxes: true,
             clear_indicators: true,
-            clear_amm_approx: true,
+            clear_omnipool_approx: true,
         }
     }
     pub fn with_indicators(mut self, indicators: Vec<usize>) -> Self {
@@ -446,7 +741,7 @@ impl SetupParams {
         self
     }
     pub fn with_flags(mut self, flags: BTreeMap<AssetId, i8>) -> Self {
-        self.flags = Some(flags);
+        self.omnipool_flags = Some(flags);
         self
     }
     pub fn with_sell_maxes(mut self, sell_maxes: Vec<FloatType>) -> Self {
@@ -470,7 +765,19 @@ impl SetupParams {
         self
     }
     pub fn with_clear_amm_approx(mut self, clear_amm_approx: bool) -> Self {
-        self.clear_amm_approx = clear_amm_approx;
+        self.clear_omnipool_approx = clear_amm_approx;
+        self
+    }
+    pub fn with_force_omnipool_approx(
+        mut self,
+        force_omnipool_approx: BTreeMap<AssetId, AmmApprox>,
+    ) -> Self {
+        self.force_omnipool_approx = Some(force_omnipool_approx);
+        self
+    }
+
+    pub fn with_force_amm_approx_vec(mut self, force_amm_approx_vec: Vec<Vec<AmmApprox>>) -> Self {
+        self.force_amm_approx_vec = Some(force_amm_approx_vec);
         self
     }
 }
@@ -489,6 +796,10 @@ impl ICEProblemV4 {
 
     pub(crate) fn get_asset_pool_data(&self, asset_id: AssetId) -> &OmnipoolAsset {
         self.amm_store.omnipool.get(&asset_id).unwrap()
+    }
+
+    pub fn is_omnipool_asset(&self, asset_id: AssetId) -> bool {
+        self.amm_store.omnipool.contains_key(&asset_id)
     }
 
     pub(crate) fn price(&self, asset_a: AssetId, asset_b: AssetId) -> FloatType {
@@ -521,16 +832,32 @@ impl ICEProblemV4 {
         } else if params.clear_sell_maxes {
             self.partial_sell_maxs = self.initial_sell_maxs.clone();
         }
-        if let Some(new_flags) = params.flags {
-            self.directional_flags = Some(new_flags);
+
+        if let Some(new_flags) = params.omnipool_flags {
+            self.omnipool_directional_flags = Some(new_flags);
         } else {
-            self.directional_flags = None;
+            self.omnipool_directional_flags = None;
         }
-        if let Some(new_force_amm_approx) = params.force_amm_approx {
-            self.force_amm_approx = Some(new_force_amm_approx);
+
+        if let Some(flags) = params.amm_flags {
+            self.amm_directional_flags = Some(flags);
+        }
+
+        if let Some(new_force_amm_approx) = params.force_omnipool_approx {
+            self.force_omnipool_approx = Some(new_force_amm_approx);
+        } else if params.clear_omnipool_approx {
+            self.force_omnipool_approx = None;
+        }
+
+        if let Some(v) = params.force_amm_approx_vec {
+            self.force_amm_approx = Some(v);
         } else if params.clear_amm_approx {
             self.force_amm_approx = None;
         }
+
+        self.last_omnipool_deltas = params.omnipool_deltas;
+        self.last_amm_deltas = params.amm_deltas;
+
         self.recalculate(params.rescale);
     }
 
@@ -538,12 +865,13 @@ impl ICEProblemV4 {
         let mut step_params = StepParams::default();
         step_params.set_known_flow(self);
         step_params.set_max_in_out(self);
-        step_params.set_bounds(self);
+        //step_params.set_bounds(self);
         if rescale {
             step_params.set_scaling(self);
-            step_params.set_amm_coefs(self);
+            step_params.set_omnipool_coefs(self);
         }
-        step_params.set_omnipool_directions(self);
+        step_params.set_directions(self);
+        //step_params.set_omnipool_directions(self);
         step_params.set_tau_phi(self);
         step_params.set_coefficients(self);
         self.step_params = step_params;
@@ -682,10 +1010,14 @@ pub struct StepParams {
     pub min_out: Option<BTreeMap<AssetId, FloatType>>,
     pub scaling: Option<BTreeMap<AssetId, FloatType>>,
     pub omnipool_directions: Option<BTreeMap<AssetId, Direction>>,
+    pub amm_directions: Option<Vec<Vec<Direction>>>,
     pub tau: Option<Array2<FloatType>>,
     pub phi: Option<Array2<FloatType>>,
     pub q: Option<Vec<FloatType>>,
     pub profit_a: Option<Array2<FloatType>>,
+    pub _S: Option<Vec<FloatType>>,
+    pub _C: Option<Array1<FloatType>>,
+    pub _B: Option<Array1<FloatType>>,
     min_x: Option<Vec<FloatType>>,
     max_x: Option<Vec<FloatType>>,
     min_lambda: Option<Vec<FloatType>>,
@@ -694,21 +1026,21 @@ pub struct StepParams {
     max_y: Option<Vec<FloatType>>,
     min_lrna_lambda: Option<Vec<FloatType>>,
     max_lrna_lambda: Option<Vec<FloatType>>,
-    amm_lrna_coefs: Option<BTreeMap<AssetId, FloatType>>,
-    amm_asset_coefs: Option<BTreeMap<AssetId, FloatType>>,
+    omnipool_lrna_coefs: Option<BTreeMap<AssetId, FloatType>>,
+    omnipool_asset_coefs: Option<BTreeMap<AssetId, FloatType>>,
 }
 
 impl StepParams {
     fn set_known_flow(&mut self, problem: &ICEProblemV4) {
         let mut known_flow: BTreeMap<AssetId, (FloatType, FloatType)> = BTreeMap::new();
 
+        // Add LRNA to known_flow
+        known_flow.insert(HUB_ASSET_ID, (0.0, 0.0));
+
         // Initialize known_flow with zero values for all assets
-        for &asset_id in problem.trading_asset_ids.iter() {
+        for &asset_id in problem.all_asset_ids.iter() {
             known_flow.insert(asset_id, (0.0, 0.0));
         }
-
-        // Add LRNA to known_flow
-        known_flow.insert(1u32.into(), (0.0, 0.0)); // Assuming 1u32 represents 'LRNA'
 
         // Update known_flow based on full intents
         if let Some(I) = &problem.get_indicators() {
@@ -719,12 +1051,28 @@ impl StepParams {
                     let (sell_quantity, buy_quantity) = problem.intent_amounts[idx];
                     let tkn_sell = intent.asset_in;
                     let tkn_buy = intent.asset_out;
+                    known_flow
+                        .entry(tkn_sell)
+                        .and_modify(|(amount_in, _)| {
+                            *amount_in += sell_quantity;
+                        })
+                        .or_insert((sell_quantity, 0.0));
 
+                    known_flow
+                        .entry(tkn_buy)
+                        .and_modify(|(_, amount_out)| {
+                            *amount_out += buy_quantity;
+                        })
+                        .or_insert((0.0, buy_quantity));
+
+                    /*
                     let entry = known_flow.entry(tkn_sell).or_insert((0.0, 0.0));
                     entry.0 = entry.0 + sell_quantity;
 
                     let entry = known_flow.entry(tkn_buy).or_insert((0.0, 0.0));
                     entry.1 = entry.1 + buy_quantity;
+
+                     */
                 }
             }
         }
@@ -737,7 +1085,7 @@ impl StepParams {
         let mut min_in: BTreeMap<AssetId, FloatType> = BTreeMap::new();
         let mut min_out: BTreeMap<AssetId, FloatType> = BTreeMap::new();
 
-        for &asset_id in problem.trading_asset_ids.iter() {
+        for &asset_id in problem.all_asset_ids.iter() {
             max_in.insert(asset_id, 0.0);
             max_out.insert(asset_id, 0.0);
             min_in.insert(asset_id, 0.0);
@@ -859,14 +1207,14 @@ impl StepParams {
         let mut scaling: BTreeMap<AssetId, FloatType> = BTreeMap::new();
 
         // Initialize scaling with zero values for all assets
-        for &asset_id in problem.trading_asset_ids.iter() {
+        for &asset_id in problem.all_asset_ids.iter() {
             scaling.insert(asset_id, 0.0);
         }
 
         // Initialize scaling for LRNA
         scaling.insert(1u32.into(), 0.0); // Assuming 1u32 represents 'LRNA'
 
-        for &tkn in problem.trading_asset_ids.iter() {
+        for &tkn in problem.all_asset_ids.iter() {
             let max_in = self.max_in.as_ref().unwrap()[&tkn];
             let max_out = self.max_out.as_ref().unwrap()[&tkn];
             scaling.insert(tkn, max_in.max(max_out));
@@ -875,23 +1223,50 @@ impl StepParams {
                 scaling.insert(tkn, 1.0);
             }
 
-            // Set scaling for LRNA equal to scaling for asset, adjusted by spot price
-            let omnipool_data = problem.get_asset_pool_data(tkn);
-            let price = problem.price(tkn, problem.tkn_profit);
-            let scalar = scaling[&tkn] * omnipool_data.hub_reserve / omnipool_data.reserve;
-            scaling.insert(1u32.into(), scaling[&1u32.into()].max(scalar));
+            if problem.is_omnipool_asset(tkn) {
+                // Set scaling for LRNA equal to scaling for asset, adjusted by spot price
+                let omnipool_data = problem.get_asset_pool_data(tkn);
+                let scalar = scaling[&tkn] * omnipool_data.hub_reserve / omnipool_data.reserve;
+                scaling.insert(1u32.into(), scaling[&1u32.into()].max(scalar));
 
-            // Raise scaling for tkn_profit to scaling for asset, adjusted by spot price, if needed
-            let scalar_profit = scaling[&tkn] * problem.price(tkn, problem.tkn_profit);
-            scaling.insert(
-                problem.tkn_profit,
-                scaling[&problem.tkn_profit].max(scalar_profit),
-            );
+                if let Some(omnipool_deltas) = &problem.last_omnipool_deltas {
+                    //self._scaling[tkn] = max(self._scaling[tkn], abs(self._last_omnipool_deltas[tkn]))
+                    scaling.insert(tkn, scaling[&tkn].max(omnipool_deltas[&tkn].abs()));
+                }
+
+                // Raise scaling for tkn_profit to scaling for asset, adjusted by spot price, if needed
+                let scalar_profit = scaling[&tkn] * problem.price(tkn, problem.tkn_profit);
+                scaling.insert(
+                    problem.tkn_profit,
+                    scaling[&problem.tkn_profit].max(scalar_profit / 10_000f64), // TODO: WHY / 10000?
+                );
+            }
+        }
+
+        for (pool_id, stablepool) in problem.amm_store.stablepools.iter() {
+            let mut max_scale = scaling[&pool_id];
+            for &tkn in stablepool.assets.iter() {
+                max_scale = max_scale.max(scaling[&tkn]);
+            }
+            scaling.insert(*pool_id, max_scale);
+            for &tkn in stablepool.assets.iter() {
+                scaling.insert(tkn, max_scale);
+            }
+        }
+
+        if let Some(amm_deltas) = &problem.last_amm_deltas {
+            for (i, (pool_id, amm)) in problem.amm_store.stablepools.iter().enumerate() {
+                assert_eq!(amm.assets.len() + 1, amm_deltas[i].len());
+                scaling.insert(*pool_id, scaling[pool_id].max(amm_deltas[i][0].abs()));
+                for (j, tkn) in amm.assets.iter().enumerate() {
+                    scaling.insert(*tkn, scaling[tkn].max(amm_deltas[i][j + 1].abs()));
+                }
+            }
         }
 
         self.scaling = Some(scaling);
     }
-    fn set_amm_coefs(&mut self, problem: &ICEProblemV4) {
+    fn set_omnipool_coefs(&mut self, problem: &ICEProblemV4) {
         let mut amm_lrna_coefs: BTreeMap<AssetId, FloatType> = BTreeMap::new();
         let mut amm_asset_coefs: BTreeMap<AssetId, FloatType> = BTreeMap::new();
 
@@ -902,12 +1277,79 @@ impl StepParams {
             amm_asset_coefs.insert(tkn, scaling[&tkn] / omnipool_data.reserve);
         }
 
-        self.amm_lrna_coefs = Some(amm_lrna_coefs);
-        self.amm_asset_coefs = Some(amm_asset_coefs);
+        self.omnipool_lrna_coefs = Some(amm_lrna_coefs);
+        self.omnipool_asset_coefs = Some(amm_asset_coefs);
     }
 }
 
 impl StepParams {
+    pub fn set_directions(&mut self, problem: &ICEProblemV4) {
+        let mut omnipool_directions = BTreeMap::new();
+        let mut amm_directions = vec![vec![]];
+        /*
+                for tkn in self._omnipool_directional_flags:
+            if self._omnipool_directional_flags[tkn] == -1:
+                self._omnipool_directions[tkn] = "sell"
+            elif self._omnipool_directional_flags[tkn] == 1:
+                self._omnipool_directions[tkn] = "buy"
+            elif self._omnipool_directional_flags[tkn] == 0:
+                self._omnipool_directions[tkn] = "neither"
+
+        self._amm_directions = []
+        for l in self._amm_directional_flags:
+            new_list = []
+            for f in l:
+                if f == -1:
+                    new_list.append("sell")
+                elif f == 1:
+                    new_list.append("buy")
+                elif f == 0:
+                    new_list.append("neither")
+            self._amm_directions.append(new_list)
+
+         */
+        if let Some(flags) = &problem.omnipool_directional_flags {
+            for (&tkn, &flag) in flags.iter() {
+                match flag {
+                    -1 => {
+                        omnipool_directions.insert(tkn, Direction::Sell);
+                    }
+                    1 => {
+                        omnipool_directions.insert(tkn, Direction::Buy);
+                    }
+                    0 => {
+                        omnipool_directions.insert(tkn, Direction::Neither);
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        if let Some(flags) = &problem.amm_directional_flags {
+            for (&pool_id, flag) in flags.iter() {
+                let mut new_list = Vec::new();
+                for &f in flag {
+                    match f {
+                        -1 => {
+                            new_list.push(Direction::Sell);
+                        }
+                        1 => {
+                            new_list.push(Direction::Buy);
+                        }
+                        0 => {
+                            new_list.push(Direction::Neither);
+                        }
+                        _ => {}
+                    }
+                }
+                amm_directions.push(new_list);
+            }
+        }
+
+        self.omnipool_directions = Some(omnipool_directions);
+        self.amm_directions = Some(amm_directions);
+    }
+    #[deprecated]
     pub fn set_omnipool_directions(&mut self, problem: &ICEProblemV4) {
         let mut known_intent_directions = BTreeMap::new();
         known_intent_directions.insert(problem.tkn_profit, Direction::Both);
@@ -984,7 +1426,7 @@ impl StepParams {
         }
 
         let mut omnipool_directions = BTreeMap::new();
-        let directions = if let Some(d) = problem.directional_flags.as_ref() {
+        let directions = if let Some(d) = problem.omnipool_directional_flags.as_ref() {
             d.clone()
         } else {
             BTreeMap::new()
@@ -1080,13 +1522,16 @@ impl StepParams {
         // lrna_lambda_i are LRNA amounts coming out of Omnipool
         let profit_lrna_lrna_lambda_coefs: A1T = ndarray::Array::from(
             problem
-                .trading_asset_ids
+                .omnipool_asset_ids
                 .iter()
                 .map(|&tkn| -problem.get_asset_pool_data(tkn).protocol_fee)
                 .collect::<Vec<_>>(),
         );
 
         let profit_lrna_lambda_coefs: A1T = ndarray::Array1::zeros(n);
+        let profit_lrna_big_x_coefs: A1T = ndarray::Array1::zeros(problem.sigma_sum);
+        let profit_lrna_l_coefs: A1T = ndarray::Array1::zeros(problem.sigma_sum);
+        let profit_lrna_a_coefs: A1T = ndarray::Array1::zeros(problem.u);
 
         let lrna_d_coefs = self.tau.as_ref().unwrap().row(0).clone().to_vec();
         let profit_lrna_d_coefs = ndarray::Array::from(lrna_d_coefs[..m].to_vec());
@@ -1119,25 +1564,68 @@ impl StepParams {
         profit_lrna_coefs.extend(profit_lrna_x_coefs);
         profit_lrna_coefs.extend(profit_lrna_lrna_lambda_coefs);
         profit_lrna_coefs.extend(profit_lrna_lambda_coefs);
+        profit_lrna_coefs.extend(profit_lrna_big_x_coefs);
+        profit_lrna_coefs.extend(profit_lrna_l_coefs);
+        profit_lrna_coefs.extend(profit_lrna_a_coefs);
         profit_lrna_coefs.extend(profit_lrna_d_coefs);
         profit_lrna_coefs.extend(profit_lrna_I_coefs);
 
         // leftover must be higher than required fees
         let fees: Vec<FloatType> = problem
-            .trading_asset_ids
+            .omnipool_asset_ids
             .iter()
             .map(|&tkn| problem.get_asset_pool_data(tkn).fee)
             .collect();
 
+        let buffer_fee = 0.00001f64;
+        let stableswap_fees = problem
+            .amm_store
+            .stablepools
+            .iter()
+            .map(|(_, pool)| {
+                let fee = pool.fee + buffer_fee - problem.fee_match;
+
+                vec![fee; pool.assets.len()]
+            })
+            .collect::<Vec<Vec<FloatType>>>()
+            .iter()
+            .flatten()
+            .collect::<Vec<FloatType>>();
+
         let partial_intent_prices: Vec<FloatType> = problem.get_partial_intent_prices();
-        let profit_y_coefs = ndarray::Array2::zeros((n, n));
-        let profit_x_coefs = -Array2::<FloatType>::eye(n);
-        let profit_lrna_lambda_coefs = ndarray::Array2::zeros((n, n));
+        let profit_y_coefs = ndarray::Array2::zeros((problem.asset_count, n));
+        let profit_x_coefs = ndarray::Array2::zeros((problem.asset_count, n));
+        //let profit_x_coefs = -Array2::<FloatType>::eye(n);
+        let profit_lrna_lambda_coefs = ndarray::Array2::zeros((problem.asset_count, n));
+        let profit_lambda_coefs = ndarray::Array2::zeros((problem.asset_count, n));
+
+        for (i, tkn) in problem.all_asset_ids.iter().enumerate() {
+            if problem.is_omnipool_asset(*tkn) {
+                let j = problem
+                    .omnipool_asset_ids
+                    .iter()
+                    .position(|&id| id == *tkn)
+                    .unwrap();
+                profit_x_coefs[(i, j)] = -1.0;
+                profit_lambda_coefs[(i, j)] = problem.fee_match - fees[j];
+            }
+        }
+        /*
         let profit_lambda_coefs = -Array2::<FloatType>::from_diag(&Array1::from(
             fees.iter()
                 .map(|&fee| fee - problem.fee_match)
                 .collect::<Vec<_>>(),
         ));
+
+         */
+
+        let profit_X_coefs = problem.rho.clone() - problem.psi.clone();
+
+        let diag_fees = Array2::from_diag(&stableswap_fees);
+        let profit_L_coefs = problem.psi.clone().dot(&diag_fees);
+
+        let profit_a_coefs = ndarray::Array2::zeros((problem.asset_count, problem.u));
+
         let scaling = self.scaling.as_ref().unwrap();
         let scaling_vars: Vec<FloatType> = problem
             .partial_indices
@@ -1181,7 +1669,7 @@ impl StepParams {
         let scaled_tau = tau.slice(s![1.., m..]).to_owned() * &Array1::from(sell_amts.clone());
         let unscaled_diff = scaled_tau - scaled_phi;
         let scalars: Vec<FloatType> = problem
-            .trading_asset_ids
+            .all_asset_ids
             .iter()
             .map(|&tkn| scaling[&tkn])
             .collect();
@@ -1197,6 +1685,9 @@ impl StepParams {
             profit_x_coefs,
             profit_lrna_lambda_coefs,
             profit_lambda_coefs,
+            profit_X_coefs,
+            profit_L_coefs,
+            profit_a_coefs,
             profit_d_coefs,
             i_coefs,
         ];
@@ -1209,10 +1700,24 @@ impl StepParams {
         self.profit_a = profit_A.clone();
 
         let profit_tkn_idx = problem
-            .trading_asset_ids
+            .all_asset_ids
             .iter()
             .position(|&tkn| tkn == problem.tkn_profit)
             .unwrap();
         self.q = Some(profit_A.as_ref().unwrap().row(profit_tkn_idx + 1).to_vec());
+        /*
+        self._S = np.array([self._scaling[tkn] for tkn in self.asset_list])
+        self._C = self._rho.T @ self._S
+        self._B = self._psi.T @ self._S
+         */
+        self._S = Some(
+            problem
+                .all_asset_ids
+                .iter()
+                .map(|&tkn| scaling[&tkn])
+                .collect::<Vec<FloatType>>(),
+        );
+        self._C = Some(problem.rho.clone().t().dot(&Array1::from(self._S.clone())));
+        self._B = Some(problem.psi.clone().t().dot(&Array1::from(self._S.clone())));
     }
 }
