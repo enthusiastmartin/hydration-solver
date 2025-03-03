@@ -445,7 +445,6 @@ fn solve_inclusion_problem(
     bool,
     Vec<Vec<FloatType>>,
 ) {
-    //TODO: adjust this Part 3
     let asset_list = p.all_asset_ids.clone();
     let omnipool_asset_list = p.omnipool_asset_ids.clone();
     let tkn_list = vec![1u32]
@@ -1384,7 +1383,7 @@ fn find_solution_unrounded(
      */
 
     let (omnipool_directions, amm_directions) = p.get_directions();
-    let k = 4 * n + 2 * sigma + m; //TODO: why 2, when everyele else is 3 ?
+    let k = 4 * n + 2 * sigma + m;
     let mut indices_to_keep: Vec<usize> = (0..k).collect();
 
     /*
