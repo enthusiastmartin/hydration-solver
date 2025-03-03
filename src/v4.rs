@@ -444,13 +444,14 @@ fn solve_inclusion_problem(
     bool,
 ) {
     //TODO: adjust this Part 3
-    let asset_list = p.trading_asset_ids.clone();
+    let asset_list = p.all_asset_ids.clone();
+    let omnipool_asset_list = p.omnipool_asset_ids.clone();
     let tkn_list = vec![1u32]
         .into_iter()
         .chain(asset_list.iter().cloned())
         .collect::<Vec<_>>();
-    let (n, m, r) = (p.n, p.m, p.r);
-    let k = 4 * n + m + r;
+    let (n, m, r, sigma) = (p.n, p.m, p.r, p.sigma_sum);
+    let k = 4 * n + 3 * sigma + m + r;
 
     let scaling = p.get_scaling();
     let x_list = x_real_list.map(|x| x.map_axis(Axis(1), |row| p.get_scaled_x(row.to_vec())));
@@ -469,7 +470,7 @@ fn solve_inclusion_problem(
     let mut max_x_d = BTreeMap::new();
     let mut min_x_d = BTreeMap::new();
 
-    for tkn in asset_list.iter() {
+    for tkn in omnipool_asset_list.iter() {
         max_lambda_d.insert(
             tkn.clone(),
             p.get_asset_pool_data(*tkn).reserve / scaling.get(tkn).unwrap() / 2.0,
@@ -487,8 +488,9 @@ fn solve_inclusion_problem(
     let max_in = p.get_max_in();
     let max_out = p.get_max_out();
 
-    for tkn in asset_list.iter() {
+    for tkn in omnipool_asset_list.iter() {
         if *tkn != p.tkn_profit {
+            /*
             max_x_d.insert(
                 tkn.clone(),
                 max_in.get(&tkn).unwrap() / scaling.get(&tkn).unwrap() * 2.0,
@@ -497,7 +499,10 @@ fn solve_inclusion_problem(
                 tkn.clone(),
                 -max_out.get(&tkn).unwrap() / scaling.get(&tkn).unwrap() * 2.0,
             );
+
+             */
             max_lambda_d.insert(tkn.clone(), -min_x_d.get(&tkn).unwrap());
+            /*
             let max_y_unscaled = max_out.get(&tkn).unwrap()
                 * p.get_asset_pool_data(*tkn).hub_reserve
                 / (p.get_asset_pool_data(*tkn).reserve - max_out.get(&tkn).unwrap())
@@ -513,8 +518,31 @@ fn solve_inclusion_problem(
                     / scaling.get(&HUB_ASSET_ID).unwrap(),
             );
             max_lrna_lambda_d.insert(tkn.clone(), -min_y_d.get(&tkn).unwrap());
+
+             */
         }
     }
+    /*
+     min_y = np.array([min_y_d[tkn] for tkn in op_asset_list])
+    max_y = np.array([max_y_d[tkn] for tkn in op_asset_list])
+    min_x = np.array([min_x_d[tkn] for tkn in op_asset_list])
+    max_x = np.array([max_x_d[tkn] for tkn in op_asset_list])
+    min_lrna_lambda = np.zeros(n)
+    max_lrna_lambda = np.array([max_lrna_lambda_d[tkn] for tkn in op_asset_list])
+    min_lambda = np.zeros(n)
+    max_lambda = np.array([max_lambda_d[tkn] for tkn in op_asset_list])
+     */
+
+    let min_y = Array1::from_iter(omnipool_asset_list.iter().map(|tkn| min_y_d.get(tkn).unwrap()));
+    let max_y = Array1::from_iter(omnipool_asset_list.iter().map(|tkn| max_y_d.get(tkn).unwrap()));
+    let min_x = Array1::from_iter(omnipool_asset_list.iter().map(|tkn| min_x_d.get(tkn).unwrap()));
+    let max_x = Array1::from_iter(omnipool_asset_list.iter().map(|tkn| max_x_d.get(tkn).unwrap()));
+    let min_lrna_lambda = Array1::zeros(n);
+    let max_lrna_lambda = Array1::from_iter(omnipool_asset_list.iter().map(|tkn| max_lrna_lambda_d.get(tkn).unwrap()));
+    let min_lambda = Array1::zeros(n);
+    let max_lambda = Array1::from_iter(omnipool_asset_list.iter().map(|tkn| max_lambda_d.get(tkn).unwrap()));
+
+    /*
 
     let (
         mut min_y,
@@ -544,20 +572,70 @@ fn solve_inclusion_problem(
     max_lrna_lambda = max_lrna_lambda.clone() + 1.1 * max_lrna_lambda.abs();
     max_lambda = max_lambda.clone() + 1.1 * max_lambda.abs();
 
+     */
+
+    /*
+    max_L = np.array([])
+    for amm in p.amm_list:
+        max_L = np.append(max_L, amm.shares)
+        for tkn in amm.asset_list:
+            max_L = np.append(max_L, amm.liquidity[tkn])
+
+    B = p.get_B()
+    C = p.get_C()
+    max_L = max_L / (B + C)
+
+    min_L = np.zeros(sigma)
+    min_X = [-x for x in max_L]
+    max_X = [inf] * sigma
+    min_a = [-inf] * sigma
+    max_a = [inf] * sigma
+     */
+
+    let mut max_L = vec![];
+    for amm in p.get_amm_list() {
+        max_L.push(amm.shares);
+        for tkn in amm.asset_list.iter() {
+            max_L.push(amm.liquidity.get(tkn).unwrap());
+        }
+    }
+    let B = p.get_B();
+    let C = p.get_C();
+    max_L = max_L.iter().map(|&v| v / (B + C)).collect::<Vec<_>>();
+
+    let min_L = Array1::<f64>::zeros(sigma);
+    let min_X = Array1::from_iter(max_L.iter().map(|&x| -x));
+    let max_X = Array1::<f64>::from_elem(sigma, inf);
+    let min_a = Array1::<f64>::from_elem(sigma, -inf);
+    let max_a = Array1::<f64>::from_elem(sigma, inf);
+
+    /*
+     lower = np.concatenate([min_y, min_x, min_lrna_lambda, min_lambda, min_X, min_L, min_a, [0] * (m + r)])
+    upper = np.concatenate([max_y, max_x, max_lrna_lambda, max_lambda, max_X, max_L, max_a, partial_intent_sell_amts, [1] * r])
+
+     */
+
     let lower = ndarray::concatenate![
         Axis(0),
         min_y.view(),
         min_x.view(),
         min_lrna_lambda.view(),
         min_lambda.view(),
+        min_X.view(),
+        min_L.view(),
+        min_a.view(),
         Array1::zeros(m + r).view()
     ];
+
     let upper = ndarray::concatenate![
         Axis(0),
         max_y.view(),
         max_x.view(),
         max_lrna_lambda.view(),
         max_lambda.view(),
+        max_X.view(),
+        Array1::from(max_L).view(),
+        max_a.view(),
         partial_intent_sell_amts,
         Array1::ones(r).view()
     ];
@@ -565,6 +643,9 @@ fn solve_inclusion_problem(
     let mut S = Array2::<f64>::zeros((n, k));
     let mut S_upper = Array1::<f64>::zeros(n);
 
+    //TODO: continue here
+
+    /*
     for (i, tkn) in asset_list.iter().enumerate() {
         let lrna_c = p.get_omnipool_lrna_coefs();
         let asset_c = p.get_omnipool_asset_coefs();
@@ -681,6 +762,7 @@ fn solve_inclusion_problem(
     let solution = solved.get_solution();
     let x_expanded = solution.columns().to_vec();
     let value_valid = status != HighsModelStatus::Infeasible;
+     */
 
     /*
 
@@ -703,6 +785,7 @@ fn solve_inclusion_problem(
     let x_expanded = solution.col_value;
      */
 
+    /*
     let mut new_amm_deltas = BTreeMap::new();
     let mut exec_partial_intent_deltas = vec![None; m];
 
@@ -729,6 +812,8 @@ fn solve_inclusion_problem(
     let save_A = old_A.clone();
     let save_A_upper = old_A_upper.clone();
     let save_A_lower = old_A_lower.clone();
+
+     */
 
     (
         new_amm_deltas,
@@ -1727,7 +1812,6 @@ fn scale_down_partial_intents(
     trade_pcts: &[f64],
     scale: f64,
 ) -> (Option<Vec<f64>>, usize) {
-    //TODO: Part 4
     let mut zero_ct = 0;
     let mut intent_sell_maxs = p.partial_sell_maxs.clone();
 

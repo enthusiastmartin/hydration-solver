@@ -954,6 +954,7 @@ impl ICEProblemV4 {
             .collect()
     }
 
+    /*
     pub fn get_scaled_bounds(
         &self,
     ) -> (
@@ -1042,6 +1043,7 @@ impl ICEProblemV4 {
             scaled_max_lambda,
         )
     }
+     */
 }
 
 #[derive(Default, Clone, Debug)]
