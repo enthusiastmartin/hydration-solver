@@ -618,7 +618,7 @@ fn solve_inclusion_problem(
      */
 
     let mut max_L = vec![];
-    for (pool_id, amm) in p.amm_store.stablepools.iter() {
+    for amm in p.amm_store.stablepools.iter() {
         max_L.push(amm.shares);
         for reserve in amm.reserves.iter() {
             max_L.push(*reserve)
@@ -671,7 +671,7 @@ fn solve_inclusion_problem(
     let mut S_upper = Array1::<f64>::zeros(n);
     let x_zero = Array1::<f64>::zeros(4 * n + 3 * sigma + m);
     let mut offset = 0;
-    for (s, (pool_id, amm)) in p.amm_store.stablepools.iter().enumerate() {
+    for (s, amm) in p.amm_store.stablepools.iter().enumerate() {
         let D0_prime = amm.d - amm.d / amm.ann();
         let s0 = amm.shares;
         let c = C[offset];
@@ -761,7 +761,7 @@ fn solve_inclusion_problem(
 
     let mut A_amm = Array2::<f64>::zeros((p.s, k));
     let mut offset = 0;
-    for (i, (pool_id, amm)) in p.amm_store.stablepools.iter().enumerate() {
+    for (i, amm) in p.amm_store.stablepools.iter().enumerate() {
         for j in 0..1 + amm.assets.len() {
             A_amm[[i, 4 * n + 2 * sigma + offset + j]] = 1.0;
         }
@@ -963,8 +963,8 @@ fn solve_inclusion_problem(
     let mut exec_full_intent_flags = vec![];
 
     let mut offset = 0;
-    for (idx, (pool_id, amm)) in p.amm_store.stablepools.iter().enumerate() {
-        let mut deltas = vec![x_expanded[4 * n + offset] * scaling[&pool_id]];
+    for amm in p.amm_store.stablepools.iter() {
+        let mut deltas = vec![x_expanded[4 * n + offset] * scaling[&amm.pool_id]];
         for (l, tkn) in amm.assets.iter().enumerate() {
             deltas.push(x_expanded[4 * n + offset + l + 1] * scaling[tkn]);
         }
@@ -1062,7 +1062,7 @@ fn find_good_solution(
 
     let mut force_amm_approx = vec![];
 
-    for (_, pool) in p.amm_store.stablepools.iter() {
+    for pool in p.amm_store.stablepools.iter() {
         let mut approx = vec![];
         for _ in 0..pool.assets.len() + 1 {
             approx.push(AmmApprox::Linear);
@@ -1113,7 +1113,7 @@ fn find_good_solution(
         }
 
         let mut stableswap_pcts = vec![];
-        for (i, (pool_id, amm)) in p.amm_store.stablepools.iter().enumerate() {
+        for (i, amm) in p.amm_store.stablepools.iter().enumerate() {
             let mut pcts = vec![];
             let sum_delta_x = amm_deltas[i].iter().skip(1).sum::<f64>();
             pcts.push(sum_delta_x / amm.d);
@@ -1128,7 +1128,7 @@ fn find_good_solution(
             stableswap_pcts.push(pcts);
         }
 
-        for (s, (pool_id, amm)) in p.amm_store.stablepools.iter().enumerate() {
+        for (s, amm) in p.amm_store.stablepools.iter().enumerate() {
             if force_amm_approx[s][0] == AmmApprox::Linear && stableswap_pcts[s][0] > 1e-5 {
                 force_amm_approx[s][0] = AmmApprox::Full;
                 approx_adjusted_ct += 1;
@@ -1213,7 +1213,7 @@ fn find_good_solution(
             }
 
             let mut stableswap_pcts = vec![];
-            for (i, (pool_id, amm)) in p.amm_store.stablepools.iter().enumerate() {
+            for (i, amm) in p.amm_store.stablepools.iter().enumerate() {
                 let mut pcts = vec![];
                 let sum_delta_x = amm_deltas[i].iter().skip(1).sum::<f64>();
                 pcts.push(sum_delta_x / amm.d);
@@ -1228,7 +1228,7 @@ fn find_good_solution(
                 stableswap_pcts.push(pcts);
             }
 
-            for (s, (pool_id, amm)) in p.amm_store.stablepools.iter().enumerate() {
+            for (s, amm) in p.amm_store.stablepools.iter().enumerate() {
                 if force_amm_approx[s][0] == AmmApprox::Linear && stableswap_pcts[s][0] > 1e-5 {
                     force_amm_approx[s][0] = AmmApprox::Full;
                     approx_adjusted_ct += 1;
@@ -1297,7 +1297,7 @@ fn find_good_solution(
 
     let mut offset = 0;
     //TODO: this is probably incorrect, as order is not guaranteed. might to rework to be vec of vec
-    let stablepools: Vec<Stablepool> = p.amm_store.stablepools.values().cloned().collect();
+    let stablepools  = &p.amm_store.stablepools;
     for (i, amm_delta) in amm_deltas.iter_mut().enumerate() {
         if (amm_delta[0] / stablepools[i].shares).abs() < 1e-11 {
             x_unscaled[4 * n + offset] = 0.0;
@@ -1579,14 +1579,14 @@ fn find_solution_unrounded(
      */
 
     let mut offset = 0;
-    for (i, (pool_id, amm)) in stablepools.iter().enumerate() {
+    for (i, amm) in stablepools.iter().enumerate() {
         let delta_pct = if let Some(delta) = &p.last_amm_deltas {
             delta[i][0] / amm.shares
         } else {
             1.0
         };
         let mut A1i = Array2::<f64>::zeros((1, k));
-        if trading_asset_ids.contains(&pool_id) && delta_pct.abs() > 1e-11 {
+        if trading_asset_ids.contains(&amm.pool_id) && delta_pct.abs() > 1e-11 {
             A1i = Array2::<f64>::zeros((1, k));
             A1i[[0, 4 * n + sigma + offset]] = -1.0;
             cones1.push(NonnegativeConeT(1));
@@ -1974,7 +1974,7 @@ fn find_solution_unrounded(
     }
 
     let mut offset = 0;
-    for (pool_id, amm) in p.amm_store.stablepools.iter() {
+    for amm in p.amm_store.stablepools.iter() {
         let mut deltas = vec![x_scaled[4 * n + offset]];
         for t in 0..amm.assets.len() {
             deltas.push(x_scaled[4 * n + offset + t + 1]);

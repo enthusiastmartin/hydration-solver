@@ -168,8 +168,8 @@ impl ICEProblemV4 {
         let mut ausiliaries = Vec::new();
 
         for stablepool in self.amm_store.stablepools.iter() {
-            sigmas.push(stablepool.1.assets.len() + 1);
-            ausiliaries.push(stablepool.1.assets.len() + 1);
+            sigmas.push(stablepool.assets.len() + 1);
+            ausiliaries.push(stablepool.assets.len() + 1);
         }
 
         let n = self.amm_store.omnipool.keys().count();
@@ -228,8 +228,8 @@ impl ICEProblemV4 {
         let mut share_indices = Vec::new();
         let mut offset = 0;
 
-        for (pool_id, amm) in &self.amm_store.stablepools {
-            if let Some(i) = self.all_asset_ids.iter().position(|&x| x == *pool_id) {
+        for amm in &self.amm_store.stablepools {
+            if let Some(i) = self.all_asset_ids.iter().position(|&x| x == amm.pool_id) {
                 share_indices.push(offset);
                 rho[(i, offset)] = 1.0;
 
@@ -659,7 +659,7 @@ impl ICEProblemV4 {
         let b = self.get_b();
         let share_indices = self.share_indices.clone();
 
-        for (j, (pool_id, amm)) in self.amm_store.stablepools.iter().enumerate() {
+        for (j, amm) in self.amm_store.stablepools.iter().enumerate() {
             let l = share_indices[j];
             let ann = amm.ann();
             let s0 = amm.shares;
@@ -1288,21 +1288,21 @@ impl StepParams {
             }
         }
 
-        for (pool_id, stablepool) in problem.amm_store.stablepools.iter() {
-            let mut max_scale = scaling[&pool_id];
+        for stablepool in problem.amm_store.stablepools.iter() {
+            let mut max_scale = scaling[&stablepool.pool_id];
             for &tkn in stablepool.assets.iter() {
                 max_scale = max_scale.max(scaling[&tkn]);
             }
-            scaling.insert(*pool_id, max_scale);
+            scaling.insert(stablepool.pool_id, max_scale);
             for &tkn in stablepool.assets.iter() {
                 scaling.insert(tkn, max_scale);
             }
         }
 
         if let Some(amm_deltas) = &problem.last_amm_deltas {
-            for (i, (pool_id, amm)) in problem.amm_store.stablepools.iter().enumerate() {
+            for (i, amm) in problem.amm_store.stablepools.iter().enumerate() {
                 assert_eq!(amm.assets.len() + 1, amm_deltas[i].len());
-                scaling.insert(*pool_id, scaling[pool_id].max(amm_deltas[i][0].abs()));
+                scaling.insert(amm.pool_id, scaling[&amm.pool_id].max(amm_deltas[i][0].abs()));
                 for (j, tkn) in amm.assets.iter().enumerate() {
                     scaling.insert(*tkn, scaling[tkn].max(amm_deltas[i][j + 1].abs()));
                 }
@@ -1625,9 +1625,8 @@ impl StepParams {
             .amm_store
             .stablepools
             .iter()
-            .map(|(_, pool)| {
+            .map(|pool| {
                 let fee = pool.fee + buffer_fee - problem.fee_match;
-
                 vec![fee; pool.assets.len()]
             })
             .collect::<Vec<Vec<FloatType>>>()

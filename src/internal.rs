@@ -41,7 +41,7 @@ pub(crate) struct AssetInfo {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct AmmStore {
     pub(crate) omnipool: BTreeMap<AssetId, OmnipoolAsset>,
-    pub(crate) stablepools: BTreeMap<AssetId, Stablepool>,
+    pub(crate) stablepools: Vec<Stablepool>,
     pub(crate) assets: BTreeMap<AssetId, AssetInfo>,
 }
 
@@ -115,7 +115,7 @@ pub(crate) fn process_data(info: Vec<crate::types::Asset>) -> AmmStore {
     }
     AmmStore {
         omnipool,
-        stablepools,
+        stablepools: stablepools.into_iter().map(|(_, v)| v).collect(),
         assets,
     }
 }
