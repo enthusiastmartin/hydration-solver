@@ -79,7 +79,6 @@ pub(crate) struct ICEProblemV4 {
     pub force_amm_approx: Option<Vec<Vec<AmmApprox>>>,
 
     pub last_omnipool_deltas: Option<BTreeMap<AssetId, FloatType>>,
-    //pub last_amm_deltas: Option<BTreeMap<AssetId, FloatType>>,
     pub last_amm_deltas: Option<Vec<Vec<FloatType>>>,
 
     pub step_params: StepParams,
@@ -92,7 +91,6 @@ impl ICEProblemV4 {
         ICEProblemV4 {
             tkn_profit: DEFAULT_PROFIT_TOKEN,
             min_partial: 1.,
-            //fee_match: 0.0005,
             fee_match: 0.,
             ..Default::default()
         }
@@ -375,46 +373,6 @@ impl ICEProblemV4 {
 }
 
 impl ICEProblemV4 {
-    pub fn get_real_x(&self, x: Vec<FloatType>) -> Vec<FloatType> {
-        //TODO: adjust this Part 2
-        let n = self.n;
-        let m = self.m;
-        let r = self.r;
-        assert!(x.len() == 4 * n + m || x.len() == 4 * n + m + r);
-
-        let scaling = self.get_scaling();
-        let real_yi: Vec<FloatType> = (0..n).map(|i| x[i] * scaling[&1u32]).collect(); // Assuming 1u32 represents 'LRNA'
-        let real_xi: Vec<FloatType> = self
-            .trading_asset_ids
-            .iter()
-            .enumerate()
-            .map(|(i, &tkn)| x[n + i] * scaling[&tkn])
-            .collect();
-        let real_lrna_lambda: Vec<FloatType> =
-            (0..n).map(|i| x[2 * n + i] * scaling[&1u32]).collect();
-        let real_lambda: Vec<FloatType> = self
-            .trading_asset_ids
-            .iter()
-            .enumerate()
-            .map(|(i, &tkn)| x[3 * n + i] * scaling[&tkn])
-            .collect();
-        let real_d: Vec<FloatType> = self
-            .partial_indices
-            .iter()
-            .enumerate()
-            .map(|(j, &idx)| x[4 * n + j] * scaling[&self.intents[idx].asset_in])
-            .collect();
-
-        let mut real_x = [real_yi, real_xi, real_lrna_lambda, real_lambda, real_d].concat();
-        if x.len() == 4 * n + m + r {
-            let real_I: Vec<FloatType> = (0..r).map(|l| x[4 * n + m + l]).collect();
-            real_x.extend(real_I);
-        }
-        real_x
-    }
-}
-
-impl ICEProblemV4 {
     pub(crate) fn get_q(&self) -> Vec<FloatType> {
         self.step_params.q.as_ref().cloned().unwrap()
     }
@@ -427,6 +385,119 @@ impl ICEProblemV4 {
     pub(crate) fn get_omnipool_lrna_coefs(&self) -> &BTreeMap<AssetId, FloatType> {
         self.step_params.omnipool_lrna_coefs.as_ref().unwrap()
     }
+    /*
+    def get_real_x(self, x):
+       '''
+       Get the real asset quantities from the scaled x.
+       x has the stucture [y_i, x_i, lrna_lambda_i, lambda_i, d_j, I_l],
+       although it may or may not have the I_l values.
+       The y_i and lrna_lambda_i are scaled to with scaling["LRNA"],
+       while the x_i and lambda_i are scaled with scaling[tkn].
+       The d_i are scaled to scaling[sell_tkn], and the I_l are in {0,1}.
+       '''
+       n, m, r = self.n, self.m, self.r
+       N, sigma, s, u = self.N, self.sigma, self.s, self.u
+       assert len(x) in [4 * n + 2 * sigma + u + m, 4 * n + 2 * sigma + m + r]
+       scaled_yi = [x[i] * self._scaling["LRNA"] for i in range(n)]
+       scaled_xi = [x[n + i] * self._scaling[tkn] for i, tkn in enumerate(self.omnipool.asset_list)]
+       scaled_lrna_lambda = [x[2*n + i] * self._scaling["LRNA"] for i in range(n)]
+       scaled_lambda = [x[3 * n + i] * self._scaling[tkn] for i, tkn in enumerate(self.omnipool.asset_list)]
+       X_scaling = (self._rho + self._psi).T @ self._S
+       scaled_X = x[4 * n: 4 * n + sigma] * X_scaling
+       scaled_L = x[4 * n + sigma: 4 * n + 2 * sigma] * X_scaling
+       if len(x) == 4 * n + 2 * sigma + m + r:  # TODO improve this logic
+           scaled_d = [x[4 * n + 2 * sigma + j] * self._scaling[intent['tkn_sell']] for j, intent in
+                       enumerate(self.partial_intents)]
+           scaled_I = [x[4 * n + m + l] for l in range(r)]
+           scaled_x = np.concatenate([scaled_yi, scaled_xi, scaled_lrna_lambda, scaled_lambda, scaled_X, scaled_L,
+                                      scaled_d, scaled_I])
+           scaled_x = np.concatenate([scaled_x, scaled_I])
+       else:
+           scaled_d = [x[4 * n + 2 * sigma + u + j] * self._scaling[intent['tkn_sell']] for j, intent in
+                       enumerate(self.partial_intents)]
+           scaled_a = x[4 * n + 2 * sigma: 4 * n + 2 * sigma + u]
+           scaled_x = np.concatenate([scaled_yi, scaled_xi, scaled_lrna_lambda, scaled_lambda, scaled_X, scaled_L,
+                                      scaled_a, scaled_d])
+       return scaled_x
+    */
+
+    pub fn get_real_x(&self, x: Vec<FloatType>) -> Vec<FloatType> {
+        let n = self.n;
+        let m = self.m;
+        let r = self.r;
+        let N = self.asset_count;
+        let sigma = self.sigma_sum;
+        let s = self.s;
+        let u = self.u;
+        assert!(x.len() == 4 * n + 2 * sigma + u + m || x.len() == 4 * n + 2 * sigma + m + r);
+
+        let scaling = self.get_scaling();
+        let scaled_yi: Vec<FloatType> = (0..n).map(|i| x[i] * scaling[&1u32]).collect(); // Assuming 1u32 represents 'LRNA'
+        let scaled_xi: Vec<FloatType> = self
+            .omnipool_asset_ids
+            .iter()
+            .enumerate()
+            .map(|(i, &tkn)| x[n + i] * scaling[&tkn])
+            .collect();
+        let scaled_lrna_lambda: Vec<FloatType> =
+            (0..n).map(|i| x[2 * n + i] * scaling[&1u32]).collect();
+        let scaled_lambda: Vec<FloatType> = self
+            .omnipool_asset_ids
+            .iter()
+            .enumerate()
+            .map(|(i, &tkn)| x[3 * n + i] * scaling[&tkn])
+            .collect();
+        let _s = Array2::from_shape_vec((N, sigma), self.get_s().clone()).unwrap(); // TODO: is this ok ?!
+        let x_scaling = (self.rho.clone() + self.psi.clone()).t().dot(&_s);
+        let mut scaled_x: Vec<FloatType> = x[4 * n..4 * n + sigma]
+            .iter()
+            .zip(x_scaling.iter())
+            .map(|(x, scaling)| x * scaling)
+            .collect();
+        let scaled_l: Vec<FloatType> = x[4 * n + sigma..4 * n + 2 * sigma]
+            .iter()
+            .zip(x_scaling.iter())
+            .map(|(x, scaling)| x * scaling)
+            .collect();
+        let mut scaled_d: Vec<FloatType> = Vec::new();
+        let mut scaled_i: Vec<FloatType> = Vec::new();
+        if x.len() == 4 * n + 2 * sigma + m + r {
+            scaled_d = self
+                .partial_indices
+                .iter()
+                .enumerate()
+                .map(|(j, &idx)| x[4 * n + 2 * sigma + j] * scaling[&self.intents[idx].asset_in])
+                .collect();
+            scaled_i = (0..r).map(|l| x[4 * n + m + l]).collect();
+        } else {
+            scaled_d = self
+                .partial_indices
+                .iter()
+                .enumerate()
+                .map(|(j, &idx)| {
+                    x[4 * n + 2 * sigma + u + j] * scaling[&self.intents[idx].asset_in]
+                })
+                .collect();
+            let scaled_a: Vec<FloatType> = x[4 * n + 2 * sigma..4 * n + 2 * sigma + u]
+                .iter()
+                .map(|&a| a)
+                .collect();
+            scaled_i = Vec::new();
+            scaled_x.extend(scaled_a);
+        }
+        let mut scaled_x = [
+            scaled_yi,
+            scaled_xi,
+            scaled_lrna_lambda,
+            scaled_lambda,
+            scaled_x.clone(),
+            scaled_l,
+            scaled_d,
+            scaled_i,
+        ];
+        scaled_x.concat()
+    }
+
     pub fn get_scaled_x(&self, x: Vec<FloatType>) -> Vec<FloatType> {
         let n = self.n;
         let m = self.m;
