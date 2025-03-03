@@ -315,6 +315,7 @@ impl SolverV4 {
                 s_new_a_lower,
                 milp_obj,
                 valid,
+                amm_deltas,
             ) = solve_inclusion_problem(
                 &problem,
                 Some(x_list.clone()),
@@ -442,6 +443,7 @@ fn solve_inclusion_problem(
     Array1<f64>,
     f64,
     bool,
+    Vec<Vec<FloatType>>,
 ) {
     //TODO: adjust this Part 3
     let asset_list = p.all_asset_ids.clone();
@@ -533,14 +535,38 @@ fn solve_inclusion_problem(
     max_lambda = np.array([max_lambda_d[tkn] for tkn in op_asset_list])
      */
 
-    let min_y = Array1::from_iter(omnipool_asset_list.iter().map(|tkn| min_y_d.get(tkn).unwrap()));
-    let max_y = Array1::from_iter(omnipool_asset_list.iter().map(|tkn| max_y_d.get(tkn).unwrap()));
-    let min_x = Array1::from_iter(omnipool_asset_list.iter().map(|tkn| min_x_d.get(tkn).unwrap()));
-    let max_x = Array1::from_iter(omnipool_asset_list.iter().map(|tkn| max_x_d.get(tkn).unwrap()));
+    let min_y = Array1::from_iter(
+        omnipool_asset_list
+            .iter()
+            .map(|tkn| min_y_d.get(tkn).unwrap().clone()),
+    );
+    let max_y = Array1::from_iter(
+        omnipool_asset_list
+            .iter()
+            .map(|tkn| max_y_d.get(tkn).unwrap().clone()),
+    );
+    let min_x = Array1::from_iter(
+        omnipool_asset_list
+            .iter()
+            .map(|tkn| min_x_d.get(tkn).unwrap().clone()),
+    );
+    let max_x = Array1::from_iter(
+        omnipool_asset_list
+            .iter()
+            .map(|tkn| max_x_d.get(tkn).unwrap().clone()),
+    );
     let min_lrna_lambda = Array1::zeros(n);
-    let max_lrna_lambda = Array1::from_iter(omnipool_asset_list.iter().map(|tkn| max_lrna_lambda_d.get(tkn).unwrap()));
+    let max_lrna_lambda = Array1::from_iter(
+        omnipool_asset_list
+            .iter()
+            .map(|tkn| max_lrna_lambda_d.get(tkn).unwrap().clone()),
+    );
     let min_lambda = Array1::zeros(n);
-    let max_lambda = Array1::from_iter(omnipool_asset_list.iter().map(|tkn| max_lambda_d.get(tkn).unwrap()));
+    let max_lambda = Array1::from_iter(
+        omnipool_asset_list
+            .iter()
+            .map(|tkn| max_lambda_d.get(tkn).unwrap().clone()),
+    );
 
     /*
 
@@ -593,15 +619,17 @@ fn solve_inclusion_problem(
      */
 
     let mut max_L = vec![];
-    for amm in p.get_amm_list() {
+    for (pool_id, amm) in p.amm_store.stablepools.iter() {
         max_L.push(amm.shares);
-        for tkn in amm.asset_list.iter() {
-            max_L.push(amm.liquidity.get(tkn).unwrap());
+        for reserve in amm.reserves.iter() {
+            max_L.push(*reserve)
         }
     }
-    let B = p.get_B();
-    let C = p.get_C();
-    max_L = max_L.iter().map(|&v| v / (B + C)).collect::<Vec<_>>();
+    let B = p.get_b();
+    let C = p.get_c();
+    let max_L = ndarray::Array1::from_vec(max_L);
+    let max_L = max_L / (B.clone() + C.clone());
+    //max_L = max_L.iter().map(|&v| v / (B + C)).collect::<Vec<_>>();
 
     let min_L = Array1::<f64>::zeros(sigma);
     let min_X = Array1::from_iter(max_L.iter().map(|&x| -x));
@@ -642,42 +670,106 @@ fn solve_inclusion_problem(
 
     let mut S = Array2::<f64>::zeros((n, k));
     let mut S_upper = Array1::<f64>::zeros(n);
-
-    //TODO: continue here
-
-    /*
-    for (i, tkn) in asset_list.iter().enumerate() {
-        let lrna_c = p.get_omnipool_lrna_coefs();
-        let asset_c = p.get_omnipool_asset_coefs();
-        S[[i, i]] = -lrna_c.get(&tkn).unwrap();
-        S[[i, n + i]] = -asset_c.get(&tkn).unwrap();
-    }
-
-    if let Some(x_list) = x_list {
-        for x in x_list.iter() {
-            for (i, tkn) in asset_list.iter().enumerate() {
-                if x[i] != 0.0 || x[n + i] != 0.0 {
-                    let mut S_row = Array2::<f64>::zeros((1, k));
-                    let mut S_row_upper = Array1::<f64>::zeros(1);
-                    let lrna_c = p.get_omnipool_lrna_coefs();
-                    let asset_c = p.get_omnipool_asset_coefs();
-                    let grads_yi = -lrna_c[tkn] - lrna_c[tkn] * asset_c[tkn] * x[n + i];
-                    let grads_xi = -asset_c[tkn] - lrna_c[tkn] * asset_c[tkn] * x[i];
-                    S_row[[0, i]] = grads_yi;
-                    S_row[[0, n + i]] = grads_xi;
-                    let grad_dot_x = grads_yi * x[i] + grads_xi * x[n + i];
-                    let g_neg = lrna_c[tkn] * x[i]
-                        + asset_c[tkn] * x[n + i]
-                        + lrna_c[tkn] * asset_c[tkn] * x[i] * x[n + i];
-                    S_row_upper[0] = grad_dot_x + g_neg;
-                    S = ndarray::concatenate![Axis(0), S.view(), S_row.view()];
-                    S_upper = ndarray::concatenate![Axis(0), S_upper.view(), S_row_upper.view()];
-                }
-            }
+    let x_zero = Array1::<f64>::zeros(4 * n + 3 * sigma + m);
+    let mut offset = 0;
+    for (s, (pool_id, amm)) in p.amm_store.stablepools.iter().enumerate() {
+        let D0_prime = amm.d - amm.d / amm.ann();
+        let s0 = amm.shares;
+        let c = C[offset];
+        let sum_assets = amm.reserves.iter().sum::<f64>();
+        let denom = sum_assets - D0_prime;
+        let a0 = x_list.as_ref().unwrap()[s][4 * n + 2 * sigma + offset];
+        let X0 = x_list.as_ref().unwrap()[s][4 * n + offset];
+        let exp = (a0 / (1.0 + c * X0 / s0)).exp();
+        let term = (c / s0 - c * a0 / (s0 + c)) * exp;
+        let mut S_row = Array2::<f64>::zeros((1, k));
+        let grad_s = term + c * D0_prime / (s0 * denom);
+        let grads_i = amm
+            .assets
+            .iter()
+            .enumerate()
+            .map(|(idx, tkn)| -B.clone()[offset + idx])
+            .collect::<Vec<_>>();
+        let grad_a = exp;
+        S_row[[0, 4 * n + offset]] = grad_s;
+        S_row[[0, 4 * n + 2 * sigma + offset]] = grad_a;
+        for (l, tkn) in amm.assets.iter().enumerate() {
+            S_row[[0, 4 * n + offset + l + 1]] = grads_i[l] / denom;
         }
+        let grad_dot_x = grad_s * X0
+            + grad_a * a0
+            + grads_i
+                .iter()
+                .zip(amm.assets.iter().enumerate())
+                .map(|(&grad, (idx, tkn))| grad * x_list.as_ref().unwrap()[s][4 * n + offset + idx])
+                .sum::<f64>();
+        let sum_deltas = amm
+            .assets
+            .iter()
+            .enumerate()
+            .zip(1..)
+            .map(|((idx, tkn), l)| {
+                B[offset + l] * x_list.as_ref().unwrap()[s][4 * n + offset + idx]
+            })
+            .sum::<f64>();
+        let g_neg =
+            (1.0 + c * X0 / s0) * exp - sum_deltas / denom + D0_prime * c * X0 / (denom * s0) - 1.0;
+        let S_row_upper = Array1::from_elem(1, grad_dot_x + g_neg);
+        S = ndarray::concatenate![Axis(0), S.view(), S_row.view()];
+        S_upper = ndarray::concatenate![Axis(0), S_upper.view(), S_row_upper.view()];
+        for (l, tkn) in amm.assets.iter().enumerate() {
+            let mut S_row = Array2::<f64>::zeros((1, k));
+            let grad_s = term;
+            let grad_a = exp;
+            let grad_x = -B[offset + l + 1] / amm.reserves[l];
+            S_row[[0, 4 * n + offset]] = grad_s;
+            S_row[[0, 4 * n + 2 * sigma + offset + l + 1]] = grad_a;
+            S_row[[0, 4 * n + offset + l + 1]] = grad_x;
+            let ai = x_list.as_ref().unwrap()[s][4 * n + 2 * sigma + offset + l + 1];
+            let grad_dot_x = grad_s * X0
+                + grad_a * ai
+                + grad_x * x_list.as_ref().unwrap()[s][4 * n + offset + l + 1];
+            let g_neg = (1.0 + c * X0 / s0) * exp
+                - B[offset + l + 1] * x_list.as_ref().unwrap()[s][4 * n + offset + l + 1]
+                    / amm.reserves[l]
+                - 1.0;
+            let S_row_upper = Array1::from_elem(1, grad_dot_x + g_neg);
+            S = ndarray::concatenate![Axis(0), S.view(), S_row.view()];
+            S_upper = ndarray::concatenate![Axis(0), S_upper.view(), S_row_upper.view()];
+        }
+        offset += 1 + amm.assets.len();
     }
+    /*
+    S_lower = np.array([-inf]*len(S_upper))
+
+    # need top level Stableswap constraint
+    A_amm = np.zeros((p.s, k))
+    offset = 0
+    for i, amm in enumerate(p.amm_list):
+        for j in range(1 + len(amm.asset_list)):
+            A_amm[i, 4*n + 2*sigma + offset + j] = 1
+        offset += 1 + len(amm.asset_list)
+    A_amm_upper = np.array([inf]*p.s)
+    A_amm_lower = np.zeros(p.s)
+
+    # asset leftover must be above zero
+    A3 = p.get_profit_A()
+    A3_upper = np.array([inf]*(N+1))
+    A3_lower = np.zeros(N+1)
+     */
 
     let S_lower = Array1::<f64>::from_elem(S_upper.len(), -inf);
+
+    let mut A_amm = Array2::<f64>::zeros((p.s, k));
+    let mut offset = 0;
+    for (i, (pool_id, amm)) in p.amm_store.stablepools.iter().enumerate() {
+        for j in 0..1 + amm.assets.len() {
+            A_amm[[i, 4 * n + 2 * sigma + offset + j]] = 1.0;
+        }
+        offset += 1 + amm.assets.len();
+    }
+    let A_amm_upper = Array1::<f64>::from_elem(p.s, inf);
+    let A_amm_lower = Array1::<f64>::zeros(p.s);
 
     let A3 = p.get_profit_A();
     let A3_upper = Array1::<f64>::from_elem(n + 1, inf);
@@ -693,12 +785,54 @@ fn solve_inclusion_problem(
     let A5_upper = Array1::<f64>::from_elem(2 * n, inf);
     let A5_lower = Array1::<f64>::zeros(2 * n);
 
+    /*
+    # inequality constraints: X_j + L_j >= 0
+    A7 = np.zeros((sigma, k))
+    for i in range(sigma):
+        A7[i, 4*n + i] = 1
+        A7[i, 4*n + sigma + i] = 1
+    A7_upper = np.array([inf] * sigma)
+    A7_lower = np.zeros(sigma)
+    # A7 = np.zeros((0,k))
+    # A7_upper = np.array([])
+    # A7_lower = np.array([])
+
+    # optimized value must be lower than best we have so far, higher than lower bound
+    A8 = np.zeros((1, k))
+    q = p.get_q()
+    A8[0, :] = -q
+    A8_upper = np.array([upper_bound / scaling[p.tkn_profit]])
+    A8_upper = np.array([upper_bound/10 / scaling[p.tkn_profit]])
+    A8_lower = np.array([lower_bound / scaling[p.tkn_profit]])
+     */
+
+    let mut A7 = Array2::<f64>::zeros((sigma, k));
+    for i in 0..sigma {
+        A7[[i, 4 * n + i]] = 1.0;
+        A7[[i, 4 * n + sigma + i]] = 1.0;
+    }
+    let A7_upper = Array1::<f64>::from_elem(sigma, inf);
+    let A7_lower = Array1::<f64>::zeros(sigma);
+
     let mut A8 = Array2::<f64>::zeros((1, k));
     let q = p.get_q();
     let q_a = ndarray::Array1::from(q.clone());
     A8.row_mut(0).assign(&(-q_a));
-    let A8_upper = Array1::from_elem(1, upper_bound / scaling[&p.tkn_profit]);
+    let A8_upper = Array1::from_elem(1, upper_bound / 10. / scaling[&p.tkn_profit]);
     let A8_lower = Array1::from_elem(1, lower_bound / scaling[&p.tkn_profit]);
+
+    /*
+        if old_A is None:
+        old_A = np.zeros((0, k))
+    if old_A_upper is None:
+        old_A_upper = np.array([])
+    if old_A_lower is None:
+        old_A_lower = np.array([])
+    assert len(old_A_upper) == len(old_A_lower) == old_A.shape[0]
+    A = np.vstack([old_A, S, A_amm, A3, A5, A7, A8])
+    A_upper = np.concatenate([old_A_upper, S_upper, A_amm_upper, A3_upper, A5_upper, A7_upper, A8_upper])
+    A_lower = np.concatenate([old_A_lower, S_lower, A_amm_lower, A3_lower, A5_lower, A7_lower, A8_lower])
+     */
 
     let old_A = old_A.unwrap_or_else(|| Array2::<f64>::zeros((0, k)));
     let old_A_upper = old_A_upper.unwrap_or_else(|| Array1::<f64>::zeros(0));
@@ -708,26 +842,61 @@ fn solve_inclusion_problem(
         Axis(0),
         old_A.view(),
         S.view(),
+        A_amm.view(),
         A3.view(),
         A5.view(),
+        A7.view(),
         A8.view()
     ];
     let A_upper = ndarray::concatenate![
         Axis(0),
         old_A_upper.view(),
         S_upper.view(),
+        A_amm_upper.view(),
         A3_upper.view(),
         A5_upper.view(),
+        A7_upper.view(),
         A8_upper.view()
     ];
     let A_lower = ndarray::concatenate![
         Axis(0),
         old_A_lower.view(),
         S_lower.view(),
+        A_amm_lower.view(),
         A3_lower.view(),
         A5_lower.view(),
+        A7_lower.view(),
         A8_lower.view()
     ];
+
+    /*
+    nonzeros = []
+    start = [0]
+    a = []
+    for i in range(A.shape[0]):
+        row_nonzeros = np.where(A[i, :] != 0)[0]
+        nonzeros.extend(row_nonzeros)
+        start.append(len(nonzeros))
+        a.extend(A[i, row_nonzeros])
+     */
+
+    let mut nonzeros = vec![];
+    let mut start = vec![0];
+    let mut a = vec![];
+    for i in 0..A.shape()[0] {
+        let row_nonzeros = A
+            .index_axis(Axis(0), i)
+            .into_shape((k,))
+            .unwrap()
+            .iter()
+            .enumerate()
+            .filter(|(_, &v)| v != 0.0)
+            .map(|(idx, _)| idx)
+            .collect::<Vec<_>>();
+        nonzeros.extend(row_nonzeros.clone());
+        start.push(nonzeros.len());
+        a.extend(row_nonzeros.iter().map(|&idx| A[[i, idx]]));
+    }
 
     let mut pb = highs::RowProblem::new();
 
@@ -762,7 +931,6 @@ fn solve_inclusion_problem(
     let solution = solved.get_solution();
     let x_expanded = solution.columns().to_vec();
     let value_valid = status != HighsModelStatus::Infeasible;
-     */
 
     /*
 
@@ -785,36 +953,60 @@ fn solve_inclusion_problem(
     let x_expanded = solution.col_value;
      */
 
-    /*
-    let mut new_amm_deltas = BTreeMap::new();
-    let mut exec_partial_intent_deltas = vec![None; m];
+    let mut new_omnipool_deltas = BTreeMap::new();
 
-    for i in 0..n {
-        let tkn = tkn_list[i + 1];
-        new_amm_deltas.insert(tkn, x_expanded[n + i] * scaling[&tkn]);
+    for (i, tkn) in p.omnipool_asset_ids.iter().enumerate() {
+        new_omnipool_deltas.insert(*tkn, x_expanded[n + i] * scaling[tkn]);
+    }
+
+    let mut new_amm_deltas = vec![];
+    let mut exec_partial_intent_deltas = vec![None; m];
+    let mut exec_full_intent_flags = vec![];
+
+    let mut offset = 0;
+    for (idx, (pool_id, amm)) in p.amm_store.stablepools.iter().enumerate() {
+        let mut deltas = vec![x_expanded[4 * n + offset] * scaling[&pool_id]];
+        for (l, tkn) in amm.assets.iter().enumerate() {
+            deltas.push(x_expanded[4 * n + offset + l + 1] * scaling[tkn]);
+        }
+        new_amm_deltas.push(deltas);
+        offset += amm.assets.len() + 1;
     }
 
     for i in 0..m {
-        exec_partial_intent_deltas[i] =
-            Some(-x_expanded[4 * n + i] * scaling[&p.get_intent(p.partial_indices[i]).asset_in]);
+        exec_partial_intent_deltas[i] = Some(
+            -x_expanded[4 * n + 3 * sigma + i]
+                * scaling[&p.get_intent(p.partial_indices[i]).asset_in],
+        );
     }
 
-    let exec_full_intent_flags = (0..r)
-        .map(|i| {
-            if x_expanded[4 * n + m + i] > 0.5 {
-                1
-            } else {
-                0
-            }
-        })
-        .collect::<Vec<_>>();
+    for i in 0..r {
+        exec_full_intent_flags.push(if x_expanded[4 * n + 3 * sigma + m + i] > 0.5 {
+            1
+        } else {
+            0
+        });
+    }
 
     let save_A = old_A.clone();
     let save_A_upper = old_A_upper.clone();
     let save_A_lower = old_A_lower.clone();
 
-     */
+    let score = -q.dot(&x_expanded) * scaling[&p.tkn_profit];
 
+    (
+        new_omnipool_deltas,
+        exec_partial_intent_deltas,
+        exec_full_intent_flags,
+        save_A,
+        save_A_upper,
+        save_A_lower,
+        score,
+        value_valid,
+        new_amm_deltas,
+    )
+
+    /*
     (
         new_amm_deltas,
         exec_partial_intent_deltas,
@@ -825,6 +1017,8 @@ fn solve_inclusion_problem(
         -q.clone().dot(&x_expanded) * scaling[&p.tkn_profit],
         value_valid,
     )
+
+         */
 }
 
 fn find_good_solution(
