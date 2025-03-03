@@ -46,6 +46,8 @@ pub struct StableSwapAsset {
     pub pool_id: AssetId,
     pub asset_id: AssetId,
     pub reserve: Balance,
+    pub shares: Balance,
+    pub d: Balance,
     pub decimals: u8,
     pub fee: (u32, u32),
     pub amplification: u128,
