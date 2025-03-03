@@ -391,41 +391,6 @@ impl ICEProblemV4 {
     pub(crate) fn get_omnipool_lrna_coefs(&self) -> &BTreeMap<AssetId, FloatType> {
         self.step_params.omnipool_lrna_coefs.as_ref().unwrap()
     }
-    /*
-    def get_real_x(self, x):
-       '''
-       Get the real asset quantities from the scaled x.
-       x has the stucture [y_i, x_i, lrna_lambda_i, lambda_i, d_j, I_l],
-       although it may or may not have the I_l values.
-       The y_i and lrna_lambda_i are scaled to with scaling["LRNA"],
-       while the x_i and lambda_i are scaled with scaling[tkn].
-       The d_i are scaled to scaling[sell_tkn], and the I_l are in {0,1}.
-       '''
-       n, m, r = self.n, self.m, self.r
-       N, sigma, s, u = self.N, self.sigma, self.s, self.u
-       assert len(x) in [4 * n + 2 * sigma + u + m, 4 * n + 2 * sigma + m + r]
-       scaled_yi = [x[i] * self._scaling["LRNA"] for i in range(n)]
-       scaled_xi = [x[n + i] * self._scaling[tkn] for i, tkn in enumerate(self.omnipool.asset_list)]
-       scaled_lrna_lambda = [x[2*n + i] * self._scaling["LRNA"] for i in range(n)]
-       scaled_lambda = [x[3 * n + i] * self._scaling[tkn] for i, tkn in enumerate(self.omnipool.asset_list)]
-       X_scaling = (self._rho + self._psi).T @ self._S
-       scaled_X = x[4 * n: 4 * n + sigma] * X_scaling
-       scaled_L = x[4 * n + sigma: 4 * n + 2 * sigma] * X_scaling
-       if len(x) == 4 * n + 2 * sigma + m + r:  # TODO improve this logic
-           scaled_d = [x[4 * n + 2 * sigma + j] * self._scaling[intent['tkn_sell']] for j, intent in
-                       enumerate(self.partial_intents)]
-           scaled_I = [x[4 * n + m + l] for l in range(r)]
-           scaled_x = np.concatenate([scaled_yi, scaled_xi, scaled_lrna_lambda, scaled_lambda, scaled_X, scaled_L,
-                                      scaled_d, scaled_I])
-           scaled_x = np.concatenate([scaled_x, scaled_I])
-       else:
-           scaled_d = [x[4 * n + 2 * sigma + u + j] * self._scaling[intent['tkn_sell']] for j, intent in
-                       enumerate(self.partial_intents)]
-           scaled_a = x[4 * n + 2 * sigma: 4 * n + 2 * sigma + u]
-           scaled_x = np.concatenate([scaled_yi, scaled_xi, scaled_lrna_lambda, scaled_lambda, scaled_X, scaled_L,
-                                      scaled_a, scaled_d])
-       return scaled_x
-    */
 
     pub fn get_real_x(&self, x: Vec<FloatType>) -> Vec<FloatType> {
         let n = self.n;
@@ -503,25 +468,6 @@ impl ICEProblemV4 {
         ];
         scaled_x.concat()
     }
-    /*
-       def get_scaled_x(self, x):
-       n, m, r, sigma = self.n, self.m, self.r, self.sigma
-       assert len(x) in [4 * n + 3 * sigma + m, 4 * n + 3 * sigma + m + r]
-       scaled_yi = [x[i] / self._scaling["LRNA"] for i in range(n)]
-       scaled_xi = [x[n + i] / self._scaling[tkn] for i, tkn in enumerate(self.omnipool.asset_list)]
-       scaled_lrna_lambda = [x[2*n + i] / self._scaling["LRNA"] for i in range(n)]
-       scaled_lambda = [x[3 * n + i] / self._scaling[tkn] for i, tkn in enumerate(self.omnipool.asset_list)]
-       stableswap_scalars = (self._rho + self._psi).T @ self._S
-       scaled_X = x[4 * n: 4 * n + sigma] / stableswap_scalars
-       scaled_L = x[4 * n + sigma: 4 * n + 2 * sigma] / stableswap_scalars
-       scaled_a = x[4 * n + 2 * sigma: 4 * n + 3 * sigma]
-       scaled_d = [x[4 * n + 3 * sigma + j] / self._scaling[intent['tkn_sell']] for j, intent in enumerate(self.partial_intents)]
-       scaled_x = np.concatenate([scaled_yi, scaled_xi, scaled_lrna_lambda, scaled_lambda, scaled_X, scaled_L, scaled_a, scaled_d])
-       if len(x) == 4 * n + 3 * sigma + m + r:
-           scaled_I = [x[4 * n + m + l] for l in range(r)]
-           scaled_x = np.concatenate([scaled_x, scaled_I])
-       return scaled_x
-    */
 
     pub fn get_scaled_x(&self, x: Vec<FloatType>) -> Vec<FloatType> {
         let n = self.n;
@@ -1302,7 +1248,10 @@ impl StepParams {
         if let Some(amm_deltas) = &problem.last_amm_deltas {
             for (i, amm) in problem.amm_store.stablepools.iter().enumerate() {
                 assert_eq!(amm.assets.len() + 1, amm_deltas[i].len());
-                scaling.insert(amm.pool_id, scaling[&amm.pool_id].max(amm_deltas[i][0].abs()));
+                scaling.insert(
+                    amm.pool_id,
+                    scaling[&amm.pool_id].max(amm_deltas[i][0].abs()),
+                );
                 for (j, tkn) in amm.assets.iter().enumerate() {
                     scaling.insert(*tkn, scaling[tkn].max(amm_deltas[i][j + 1].abs()));
                 }

@@ -1296,8 +1296,7 @@ fn find_good_solution(
     }
 
     let mut offset = 0;
-    //TODO: this is probably incorrect, as order is not guaranteed. might to rework to be vec of vec
-    let stablepools  = &p.amm_store.stablepools;
+    let stablepools = &p.amm_store.stablepools;
     for (i, amm_delta) in amm_deltas.iter_mut().enumerate() {
         if (amm_delta[0] / stablepools[i].shares).abs() < 1e-11 {
             x_unscaled[4 * n + offset] = 0.0;
@@ -1673,49 +1672,6 @@ fn find_solution_unrounded(
     ];
     let A2_trimmed = A2.select(Axis(1), &indices_to_keep);
     let cone2 = NonnegativeConeT(A2_trimmed.shape()[0]);
-
-    /*
-
-
-    let A3 = profit_A.slice(s![.., ..4 * n + m]).to_owned();
-    let mut A3 = A3.neg();
-    let I_coefs = profit_A.slice(s![.., 4 * n + m..]).to_owned();
-    let mut I_coefs = I_coefs.neg();
-
-    if allow_loss {
-        let profit_i = p
-            .trading_asset_ids
-            .iter()
-            .position(|&x| x == p.tkn_profit)
-            .unwrap()
-            + 1;
-        A3.remove_index(Axis(0), profit_i);
-        I_coefs.remove_index(Axis(0), profit_i);
-    }
-    let A3_trimmed = A3.select(Axis(1), &indices_to_keep);
-
-    let b3 = if r == 0 {
-        Array1::<f64>::zeros(A3_trimmed.shape()[0])
-    } else {
-        let indicators = if let Some(inds) = p.get_indicators() {
-            inds
-        } else {
-            vec![0; r]
-        };
-        //TODO: this is trange to convert indicators to f64 - verify if we should use f64 for indicators
-        let r_inds: ndarray::Array1<FloatType> = ndarray::Array::from(indicators)
-            .iter()
-            .map(|v| *v as f64)
-            .collect();
-        -I_coefs.dot(&r_inds)
-    };
-    let cone3 = NonnegativeConeT(A3_trimmed.shape()[0]);
-
-     */
-    /*
-     A3_trimmed, b3 = _get_leftover_bounds(p, allow_loss, indices_to_keep)
-    cone3 = cb.NonnegativeConeT(A3_trimmed.shape[0])
-     */
 
     let (A3_trimmed, b3) = p.get_leftover_bounds(allow_loss, Some(indices_to_keep.clone()));
     let cone3 = NonnegativeConeT(A3_trimmed.shape()[0]);
