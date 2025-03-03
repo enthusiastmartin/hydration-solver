@@ -368,7 +368,13 @@ impl ICEProblemV4 {
             panic!("Not implemented yet!");
             //self.amm_store.stablepools.get(&tkn).unwrap().reserves[0]
         }
-        panic!("Unknown token!");
+    }
+    pub fn get_lrna_liquidity(&self, tkn: AssetId) -> FloatType {
+        if self.is_omnipool_asset(tkn) {
+            return self.amm_store.omnipool.get(&tkn).unwrap().hub_reserve;
+        } else {
+            panic!("Not omnipool asset!");
+        }
     }
 }
 

@@ -1,7 +1,7 @@
 #![allow(non_snake_case)]
 
 use crate::constants::{FLOAT_INF, HUB_ASSET_ID, ROUND_TOLERANCE};
-use crate::internal::process_data;
+use crate::internal::{process_data, Stablepool};
 use crate::problem_v4::{
     AmmApprox, Direction, ICEProblemV4 as ICEProblem, ProblemStatus, SetupParams,
 };
@@ -794,12 +794,12 @@ fn find_good_solution(
 
     let setup_params = SetupParams::new()
         .with_clear_indicators(false)
-        .with_force_omnipool_approx(force_omnipool_approx)
-        .with_force_amm_approx_vec(force_amm_approx);
+        .with_force_omnipool_approx(force_omnipool_approx.clone())
+        .with_force_amm_approx_vec(force_amm_approx.clone());
 
     p.set_up_problem(setup_params);
 
-    let (omnipool_deltas, intent_deltas, x, obj, dual_obj, status, amm_deltas) =
+    let (mut omnipool_deltas, intent_deltas, x, obj, dual_obj, status, mut amm_deltas) =
         find_solution_unrounded(&p, allow_loss);
 
     let mut trade_pcts: Vec<f64> = if scale_trade_max {
@@ -813,16 +813,238 @@ fn find_good_solution(
     };
     trade_pcts.extend(vec![1.0; r]);
 
-    //TODO: continue here then  Part 1
+    let mut approx_adjusted_ct = 0;
+    if approx_amm_eqs
+        && status != ProblemStatus::PrimalInfeasible
+        && status != ProblemStatus::DualInfeasible
+    {
+        let mut omnipool_pcts = BTreeMap::new();
+        for tkn in &p.omnipool_asset_ids {
+            omnipool_pcts.insert(*tkn, omnipool_deltas[tkn].abs() / p.get_tkn_liquidity(*tkn));
+        }
 
-    let amm_deltas = vec![];
+        for tkn in &p.omnipool_asset_ids {
+            if force_omnipool_approx[tkn] == AmmApprox::Linear && omnipool_pcts[tkn] > 1e-6 {
+                force_omnipool_approx.insert(*tkn, AmmApprox::Quadratic);
+                approx_adjusted_ct += 1;
+            }
+            if force_omnipool_approx[tkn] == AmmApprox::Quadratic && omnipool_pcts[tkn] > 1e-3 {
+                force_omnipool_approx.insert(*tkn, AmmApprox::Full);
+                approx_adjusted_ct += 1;
+            }
+        }
+
+        let mut stableswap_pcts = vec![];
+        for (i, (pool_id, amm)) in p.amm_store.stablepools.iter().enumerate() {
+            let mut pcts = vec![];
+            let sum_delta_x = amm_deltas[i].iter().skip(1).sum::<f64>();
+            pcts.push(sum_delta_x / amm.d);
+            pcts.extend(
+                amm_deltas[i]
+                    .iter()
+                    .skip(1)
+                    .zip(amm.assets.iter().skip(1))
+                    .enumerate()
+                    .map(|(idx, (delta, tkn))| delta.abs() / amm.reserves[idx + 1]),
+            );
+            stableswap_pcts.push(pcts);
+        }
+
+        for (s, (pool_id, amm)) in p.amm_store.stablepools.iter().enumerate() {
+            if force_amm_approx[s][0] == AmmApprox::Linear && stableswap_pcts[s][0] > 1e-5 {
+                force_amm_approx[s][0] = AmmApprox::Full;
+                approx_adjusted_ct += 1;
+            }
+            for (j, tkn) in amm.assets.iter().enumerate() {
+                if force_amm_approx[s][j + 1] == AmmApprox::Linear
+                    && stableswap_pcts[s][j + 1] > 1e-5
+                {
+                    force_amm_approx[s][j + 1] = AmmApprox::Full;
+                    approx_adjusted_ct += 1;
+                }
+            }
+        }
+    }
+
+    for _ in 0..100 {
+        let trade_pcts_nonzero_max = p
+            .partial_sell_maxs
+            .iter()
+            .enumerate()
+            .filter(|(i, &m)| m > 0.0)
+            .map(|(i, _)| -intent_deltas[i] / m as f64)
+            .collect::<Vec<_>>();
+        let min_value = trade_pcts_nonzero_max
+            .iter()
+            .cloned()
+            .fold(f64::INFINITY, f64::min);
+        if (trade_pcts_nonzero_max.len() == 0 || min_value >= 0.1) && approx_adjusted_ct == 0 {
+            break;
+        }
+        let (new_maxes, zero_ct) = if trade_pcts_nonzero_max.len() > 0 && min_value < 0.1 {
+            scale_down_partial_intents(&p, &trade_pcts, 10f64)
+        } else {
+            (None, 0)
+        };
+
+        //TODO: set up problem here !!! Part 2
+        /*
+        p.set_up_problem(
+            SetupParams::new()
+                .with_sell_maxes(new_maxes)
+                .with_clear_indicators(false)
+                .with_force_omnipool_approx(force_omnipool_approx.clone())
+                .with_force_amm_approx_vec(force_amm_approx.clone())
+                .with_omnipool_deltas(omnipool_deltas.clone())
+                .with_amm_deltas(amm_deltas.clone()),
+        );
+
+         */
+
+        let (omnipool_deltas, intent_deltas, x, obj, dual_obj, status, amm_deltas) =
+            find_solution_unrounded(&p, allow_loss);
+
+        if scale_trade_max {
+            trade_pcts = p
+                .partial_sell_maxs
+                .iter()
+                .enumerate()
+                .map(|(i, &m)| if m > 0.0 { -intent_deltas[i] / m } else { 0.0 })
+                .collect();
+        }
+
+        if approx_amm_eqs
+            && status != ProblemStatus::PrimalInfeasible
+            && status != ProblemStatus::DualInfeasible
+        {
+            let mut omnipool_pcts = BTreeMap::new();
+            for tkn in &p.omnipool_asset_ids {
+                omnipool_pcts.insert(*tkn, omnipool_deltas[tkn].abs() / p.get_tkn_liquidity(*tkn));
+            }
+
+            approx_adjusted_ct = 0;
+            for tkn in &p.omnipool_asset_ids {
+                if force_omnipool_approx[tkn] == AmmApprox::Linear && omnipool_pcts[tkn] > 1e-6 {
+                    force_omnipool_approx.insert(*tkn, AmmApprox::Quadratic);
+                    approx_adjusted_ct += 1;
+                }
+                if force_omnipool_approx[tkn] == AmmApprox::Quadratic && omnipool_pcts[tkn] > 1e-3 {
+                    force_omnipool_approx.insert(*tkn, AmmApprox::Full);
+                    approx_adjusted_ct += 1;
+                }
+            }
+
+            let mut stableswap_pcts = vec![];
+            for (i, (pool_id, amm)) in p.amm_store.stablepools.iter().enumerate() {
+                let mut pcts = vec![];
+                let sum_delta_x = amm_deltas[i].iter().skip(1).sum::<f64>();
+                pcts.push(sum_delta_x / amm.d);
+                pcts.extend(
+                    amm_deltas[i]
+                        .iter()
+                        .skip(1)
+                        .zip(amm.assets.iter().skip(1))
+                        .enumerate()
+                        .map(|(idx, (delta, tkn))| delta.abs() / amm.reserves[idx + 1]),
+                );
+                stableswap_pcts.push(pcts);
+            }
+
+            for (s, (pool_id, amm)) in p.amm_store.stablepools.iter().enumerate() {
+                if force_amm_approx[s][0] == AmmApprox::Linear && stableswap_pcts[s][0] > 1e-5 {
+                    force_amm_approx[s][0] = AmmApprox::Full;
+                    approx_adjusted_ct += 1;
+                }
+                for (j, tkn) in amm.assets.iter().enumerate() {
+                    if force_amm_approx[s][j + 1] == AmmApprox::Linear
+                        && stableswap_pcts[s][j + 1] > 1e-5
+                    {
+                        force_amm_approx[s][j + 1] = AmmApprox::Full;
+                        approx_adjusted_ct += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    /*
+    //TODO: this does not anything yet in python
+    if do_directional_run {
+        let (omnipool_flags, amm_flags) = get_directional_flags(&omnipool_deltas, &amm_deltas);
+
+        let setup_params = SetupParams::new()
+            .with_omnipool_flags(omnipool_flags)
+            .with_clear_indicators(false)
+            .with_clear_sell_maxes(false)
+            .with_clear_omnipool_approx(false)
+            .with_clear_amm_approx(false)
+            .with_omnipool_deltas(omnipool_deltas)
+            .with_amm_deltas(amm_deltas)
+            .with_amm_flags(amm_flags);
+
+        p.set_up_problem(setup_params);
+
+        let (omnipool_deltas, intent_deltas, x, obj, dual_obj, status, amm_deltas) =
+            find_solution_unrounded(&p, allow_loss);
+    }
+
+     */
+
+    if status == ProblemStatus::PrimalInfeasible || status == ProblemStatus::DualInfeasible {
+        let amm_deltas = vec![];
+        return (
+            BTreeMap::new(),
+            vec![0.0; p.partial_indices.len()],
+            vec![0.; 4 * n + m],
+            0.0,
+            0.0,
+            ProblemStatus::Solved,
+            amm_deltas,
+        );
+    }
+
+    let mut x_unscaled = p.get_real_x(x.iter().cloned().collect());
+    for i in 0..n {
+        let tkn = p.omnipool_asset_ids[i];
+        if (x_unscaled[i] / p.get_lrna_liquidity(tkn)).abs() < 1e-11
+            || (x_unscaled[n + i] / p.get_tkn_liquidity(tkn)).abs() < 1e-11
+        {
+            x_unscaled[i] = 0.0;
+            x_unscaled[n + i] = 0.0;
+            x_unscaled[2 * n + i] = 0.0;
+            x_unscaled[3 * n + i] = 0.0;
+            *omnipool_deltas.get_mut(&tkn).unwrap() = 0.0;
+        }
+    }
+
+    let mut offset = 0;
+    //TODO: this is probably incorrect, as order is not guaranteed. might to rework to be vec of vec
+    let stablepools: Vec<Stablepool> = p.amm_store.stablepools.values().cloned().collect();
+    for (i, amm_delta) in amm_deltas.iter_mut().enumerate() {
+        if (amm_delta[0] / stablepools[i].shares).abs() < 1e-11 {
+            x_unscaled[4 * n + offset] = 0.0;
+            x_unscaled[4 * n + sigma + offset] = 0.0;
+            x_unscaled[4 * n + 2 * sigma + offset] = 0.0;
+            amm_delta[0] = 0.0;
+        }
+        for (j, tkn) in stablepools[i].assets.iter().enumerate() {
+            if (amm_delta[j + 1] / stablepools[i].reserves[j]).abs() < 1e-11 {
+                amm_delta[j + 1] = 0.0;
+                x_unscaled[4 * n + offset + j + 1] = 0.0;
+                x_unscaled[4 * n + sigma + offset + j + 1] = 0.0;
+                x_unscaled[4 * n + 2 * sigma + offset + j + 1] = 0.0;
+            }
+        }
+        offset += stablepools[i].assets.len() + 1;
+    }
+
     (
-        BTreeMap::new(),
-        vec![0.0; p.partial_indices.len()],
-        vec![0.; 4 * n + m],
-        0.0,
-        0.0,
-        ProblemStatus::Solved,
+        omnipool_deltas,
+        intent_deltas,
+        x_unscaled,
+        obj,
+        dual_obj,
+        status,
         amm_deltas,
     )
 }
@@ -1505,6 +1727,7 @@ fn scale_down_partial_intents(
     trade_pcts: &[f64],
     scale: f64,
 ) -> (Option<Vec<f64>>, usize) {
+    //TODO: Part 4
     let mut zero_ct = 0;
     let mut intent_sell_maxs = p.partial_sell_maxs.clone();
 
