@@ -256,8 +256,8 @@ impl SolverV4 {
         for _i in 0..5 {
             let params = SetupParams::new().with_indicators(iter_indicators.clone());
             problem.set_up_problem(params);
-            let (amm_deltas, intent_deltas, x, obj, dual_obj, status) =
-                find_good_solution_unrounded(&problem, true, true, true, true);
+            let (omnipool_deltas, intent_deltas, x, obj, dual_obj, status, amm_deltas) =
+                find_good_solution(&problem, true, true, true, true);
 
             if obj < Z_U && dual_obj <= 0.0 {
                 Z_U = obj;
@@ -753,6 +753,7 @@ fn find_good_solution(
     f64,
     f64,
     ProblemStatus,
+    Vec<Vec<FloatType>>,
 ) {
     /*
 
@@ -796,7 +797,7 @@ fn find_good_solution(
 
     p.set_up_problem(setup_params);
 
-    let (amm_deltas, intent_deltas, x, obj, dual_obj, status) =
+    let (omnipool_deltas, intent_deltas, x, obj, dual_obj, status, amm_deltas) =
         find_solution_unrounded(&p, allow_loss);
 
     let mut trade_pcts: Vec<f64> = if scale_trade_max {
@@ -812,6 +813,7 @@ fn find_good_solution(
 
     //TODO: continue here then
 
+    let amm_deltas = vec![];
     (
         BTreeMap::new(),
         vec![0.0; p.partial_indices.len()],
@@ -819,237 +821,8 @@ fn find_good_solution(
         0.0,
         0.0,
         ProblemStatus::Solved,
+        amm_deltas,
     )
-}
-
-#[deprecated]
-fn find_good_solution_unrounded(
-    problem: &ICEProblem,
-    scale_trade_max: bool,
-    approx_amm_eqs: bool,
-    do_directional_run: bool,
-    allow_loss: bool,
-) -> (
-    BTreeMap<AssetId, f64>,
-    Vec<f64>,
-    Vec<f64>,
-    f64,
-    f64,
-    ProblemStatus,
-) {
-    let mut p: ICEProblem = problem.clone();
-    let (n, m, r) = (p.n, p.m, p.r);
-    if p.get_indicators_len() as f64 + p.partial_sell_maxs.iter().sum::<f64>() == 0.0 {
-        // nothing to execute
-        return (
-            BTreeMap::new(),
-            vec![0.0; p.partial_indices.len()],
-            vec![0.; 4 * n + m],
-            0.0,
-            0.0,
-            ProblemStatus::Solved,
-        );
-    }
-
-    let (mut amm_deltas, mut intent_deltas, mut x, mut obj, mut dual_obj, mut status) =
-        find_solution_unrounded(&p, allow_loss);
-
-    // if partial trade size is much higher than executed trade, lower trade max
-    let mut trade_pcts: Vec<f64> = if scale_trade_max {
-        p.partial_sell_maxs
-            .iter()
-            .enumerate()
-            .map(|(i, &m)| if m > 0.0 { -intent_deltas[i] / m } else { 0.0 })
-            .collect()
-    } else {
-        vec![1.0; p.partial_sell_maxs.len()]
-    };
-    trade_pcts.extend(vec![1.0; r]);
-
-    // adjust AMM constraint approximation based on percent of Omnipool liquidity traded with AMM
-    let mut force_amm_approx: Option<BTreeMap<AssetId, AmmApprox>> = None;
-    let mut approx_adjusted_ct = 0;
-
-    if approx_amm_eqs
-        && status != ProblemStatus::PrimalInfeasible
-        && status != ProblemStatus::DualInfeasible
-    {
-        force_amm_approx = Some(
-            p.trading_asset_ids
-                .iter()
-                .map(|&tkn| (tkn, AmmApprox::Full))
-                .collect(),
-        );
-        let amm_pcts: BTreeMap<_, _> = p
-            .trading_asset_ids
-            .iter()
-            .map(|&tkn| {
-                (
-                    tkn,
-                    (amm_deltas.get(&tkn).unwrap() / p.get_asset_pool_data(tkn).reserve).abs(),
-                )
-            })
-            .collect();
-
-        for &tkn in &p.trading_asset_ids {
-            if let Some(force_amm_approx) = force_amm_approx.as_mut() {
-                if amm_pcts[&tkn] <= 1e-6 {
-                    force_amm_approx.insert(tkn, AmmApprox::Linear);
-                    approx_adjusted_ct += 1;
-                } else if amm_pcts[&tkn] <= 1e-3 {
-                    force_amm_approx.insert(tkn, AmmApprox::Quadratic);
-                    approx_adjusted_ct += 1;
-                }
-            }
-        }
-    }
-
-    for iteration in 0..100 {
-        let trade_pcts_nonzero: Vec<_> = trade_pcts.iter().filter(|&&x| x > 0.0).collect();
-        if (trade_pcts_nonzero.is_empty()
-            || trade_pcts_nonzero
-                .iter()
-                .cloned()
-                .cloned()
-                .min_by(|a, b| a.partial_cmp(b).unwrap())
-                .unwrap()
-                >= 0.1)
-            && approx_adjusted_ct == 0
-        {
-            break;
-        }
-
-        let (new_maxes, zero_ct) = if trade_pcts
-            .iter()
-            .cloned()
-            .min_by(|a, b| a.partial_cmp(b).unwrap())
-            .unwrap()
-            < 0.1
-        {
-            scale_down_partial_intents(&p, &trade_pcts, 10.)
-        } else {
-            (None, 0)
-        };
-
-        if zero_ct == m {
-            // all partial intents have been eliminated from execution
-            break;
-        }
-
-        let params = SetupParams::new().with_clear_indicators(false);
-        let params = if let Some(force_amm_approx) = force_amm_approx.as_ref() {
-            params.with_force_amm_approx(force_amm_approx.clone())
-        } else {
-            params
-        };
-        let params = if let Some(nm) = new_maxes {
-            params.with_sell_maxes(nm)
-        } else {
-            params
-        };
-        p.set_up_problem(params);
-
-        let (new_amm_deltas, new_intent_deltas, new_x, new_obj, new_dual_obj, new_status) =
-            find_solution_unrounded(&p, allow_loss);
-
-        // need to check if amm_deltas stayed within their reasonable approximation bounds
-        // if not, we may want to discard the "solution"
-
-        amm_deltas = new_amm_deltas;
-        intent_deltas = new_intent_deltas;
-        x = new_x;
-        obj = new_obj;
-        dual_obj = new_dual_obj;
-        status = new_status;
-
-        if scale_trade_max {
-            trade_pcts = p
-                .partial_sell_maxs
-                .iter()
-                .enumerate()
-                .map(|(i, &m)| if m > 0.0 { -intent_deltas[i] / m } else { 0.0 })
-                .collect();
-            trade_pcts.extend(vec![1.0; r]);
-        }
-
-        if approx_amm_eqs
-            && status != ProblemStatus::PrimalInfeasible
-            && status != ProblemStatus::DualInfeasible
-        {
-            let amm_pcts: BTreeMap<_, _> = p
-                .trading_asset_ids
-                .iter()
-                .map(|&tkn| {
-                    (
-                        tkn,
-                        (amm_deltas.get(&tkn).unwrap() / p.get_asset_pool_data(tkn).reserve).abs(),
-                    )
-                })
-                .collect();
-
-            approx_adjusted_ct = 0;
-            for &tkn in &p.trading_asset_ids {
-                if let Some(force_amm_approx) = force_amm_approx.as_mut() {
-                    match force_amm_approx[&tkn] {
-                        AmmApprox::Linear => {
-                            if amm_pcts[&tkn] > 1e-3 {
-                                force_amm_approx.insert(tkn, AmmApprox::Full);
-                                approx_adjusted_ct += 1;
-                            } else if amm_pcts[&tkn] > 2e-6 {
-                                force_amm_approx.insert(tkn, AmmApprox::Quadratic);
-                                approx_adjusted_ct += 1;
-                            }
-                        }
-                        AmmApprox::Quadratic => {
-                            if amm_pcts[&tkn] > 2e-3 {
-                                force_amm_approx.insert(tkn, AmmApprox::Full);
-                                approx_adjusted_ct += 1;
-                            } else if amm_pcts[&tkn] <= 1e-6 {
-                                force_amm_approx.insert(tkn, AmmApprox::Linear);
-                                approx_adjusted_ct += 1;
-                            }
-                        }
-                        _ => {
-                            if amm_pcts[&tkn] <= 1e-6 {
-                                force_amm_approx.insert(tkn, AmmApprox::Linear);
-                                approx_adjusted_ct += 1;
-                            } else if amm_pcts[&tkn] <= 1e-3 {
-                                force_amm_approx.insert(tkn, AmmApprox::Quadratic);
-                                approx_adjusted_ct += 1;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // once solution is found, re-run with directional flags
-    if do_directional_run {
-        let flags = get_directional_flags(&amm_deltas);
-        let params = SetupParams::new()
-            .with_flags(flags)
-            .with_clear_indicators(false)
-            .with_clear_sell_maxes(false)
-            .with_clear_amm_approx(false);
-        p.set_up_problem(params);
-        let (new_amm_deltas, new_intent_deltas, new_x, new_obj, new_dual_obj, new_status) =
-            find_solution_unrounded(&p, allow_loss);
-
-        amm_deltas = new_amm_deltas;
-        intent_deltas = new_intent_deltas;
-        x = new_x;
-        obj = new_obj;
-        dual_obj = new_dual_obj;
-        status = new_status;
-    }
-
-    if status == ProblemStatus::PrimalInfeasible || status == ProblemStatus::DualInfeasible {
-        return (BTreeMap::new(), vec![0.0; m], vec![], 0.0, 0.0, status);
-    }
-
-    let x_unscaled = p.get_real_x(x.iter().cloned().collect());
-    (amm_deltas, intent_deltas, x_unscaled, obj, dual_obj, status)
 }
 
 fn find_solution_unrounded(
@@ -1062,6 +835,7 @@ fn find_solution_unrounded(
     f64,
     f64,
     ProblemStatus,
+    Vec<Vec<f64>>,
 ) {
     if p.indicators.is_none() {
         panic!("dont know why yet i should panic here")
@@ -1516,52 +1290,40 @@ fn find_solution_unrounded(
 
     // TODO: continue from here with A6 and A7
 
-    /*
-    let mut A5 = Array2::<f64>::zeros((0, k));
     let mut A6 = Array2::<f64>::zeros((0, k));
-    let mut A7 = Array2::<f64>::zeros((0, k));
-
-    for i in 0..n {
-        let tkn = trading_asset_ids[i];
-        if !directions.contains_key(&tkn) {
-            let mut A5i = Array2::<f64>::zeros((2, k));
-            A5i[[0, i]] = -1.0;
-            A5i[[0, 2 * n + i]] = -1.0;
-            A5i[[1, n + i]] = -1.0;
-            A5i[[1, 3 * n + i]] = -1.0;
-            A5 = ndarray::concatenate![Axis(0), A5, A5i];
-        } else {
-            let mut A6i = Array2::<f64>::zeros((2, k));
-            let mut A7i = Array2::<f64>::zeros((1, k));
-            if directions[&tkn] == Direction::Sell {
-                A6i[[0, i]] = -1.0;
-                A6i[[1, n + i]] = 1.0;
-                A7i[[0, n + i]] = 1.0;
-                A7i[[0, 3 * n + i]] = 1.0;
-            } else {
-                A6i[[0, i]] = 1.0;
-                A6i[[1, n + i]] = -1.0;
-                A7i[[0, i]] = 1.0;
-                A7i[[0, 2 * n + i]] = 1.0;
-            }
-            A6 = ndarray::concatenate![Axis(0), A6, A6i];
-            A7 = ndarray::concatenate![Axis(0), A7, A7i];
-        }
-    }
-
-    let A5_trimmed = A5.select(Axis(1), &indices_to_keep);
-    let A6_trimmed = A6.select(Axis(1), &indices_to_keep);
-    let A7_trimmed = A7.select(Axis(1), &indices_to_keep);
-
-    let b5 = Array1::<f64>::zeros(A5.shape()[0]);
-    let b6 = Array1::<f64>::zeros(A6.shape()[0]);
-    let b7 = Array1::<f64>::zeros(A7.shape()[0]);
-    let cone5 = NonnegativeConeT(A5.shape()[0]);
-    let cone6 = NonnegativeConeT(A6.shape()[0]);
-    let cone7 = ZeroConeT(A7.shape()[0]);
-     */
-
     /*
+       for i in range(n):
+       A6i = np.zeros((2, k))
+       A6i[0, i] = -1  # lrna_lambda + yi >= 0
+       A6i[0, 2*n+i] = -1  # lrna_lambda + yi >= 0
+       A6i[1, n+i] = -1  # lambda + xi >= 0
+       A6i[1, 3*n+i] = -1  # lambda + xi >= 0
+       A6 = np.vstack([A6, A6i])
+
+    */
+    for i in 0..n {
+        let mut A6i = Array2::<f64>::zeros((2, k));
+        A6i[[0, i]] = -1.0;
+        A6i[[0, 2 * n + i]] = -1.0;
+        A6i[[1, n + i]] = -1.0;
+        A6i[[1, 3 * n + i]] = -1.0;
+        A6 = ndarray::concatenate![Axis(0), A6, A6i];
+    }
+    let A6_trimmed = A6.select(Axis(1), &indices_to_keep);
+    let b6 = Array1::<f64>::zeros(A6.shape()[0]);
+    let cone6 = NonnegativeConeT(A6.shape()[0]);
+
+    let mut A7 = Array2::<f64>::zeros((0, k));
+    for i in 0..sigma {
+        let mut A7i = Array2::<f64>::zeros((1, k));
+        A7i[[0, 4 * n + i]] = -1.0;
+        A7i[[0, 4 * n + sigma + i]] = -1.0;
+        A7 = ndarray::concatenate![Axis(0), A7, A7i];
+    }
+    let A7_trimmed = A7.select(Axis(1), &indices_to_keep);
+    let b7 = Array1::<f64>::zeros(A7.shape()[0]);
+    let cone7 = NonnegativeConeT(A7.shape()[0]);
+
     let A = ndarray::concatenate![
         Axis(0),
         A1_trimmed,
@@ -1573,7 +1335,6 @@ fn find_solution_unrounded(
         A7_trimmed
     ];
 
-     */
     // convert a1_trimmed to vec of vec<f64>, note that to_vec does not exist
     let shape = A1_trimmed.shape();
     let mut a_vec = Vec::new();
@@ -1675,11 +1436,14 @@ fn find_solution_unrounded(
         A
     };
     let b = ndarray::concatenate![Axis(0), b1, b2, b3, b4, b5, b6, b7];
-    let cones = vec![cone1, cone2, cone3]
-        .into_iter()
-        .chain(cones4.into_iter())
-        .chain(vec![cone5, cone6, cone7].into_iter())
-        .collect::<Vec<_>>();
+
+    let mut cones = vec![];
+    cones.extend(cones1.into_iter().flatten());
+    cones.push(cone2);
+    cones.push(cone3);
+    cones.extend(cones4.into_iter().flatten());
+    cones.push(cone6);
+    cones.push(cone7);
 
     let settings = DefaultSettingsBuilder::default()
         .verbose(false)
@@ -1695,7 +1459,8 @@ fn find_solution_unrounded(
     //println!("status: {:?}", status);
     //println!("time: {:?}", solve_time);
 
-    let mut new_amm_deltas = BTreeMap::new();
+    let mut new_omnipool_deltas = BTreeMap::new();
+    let mut new_amm_deltas = vec![];
     let mut exec_intent_deltas = vec![0.0; partial_intents_len];
     let mut x_expanded = vec![0.0; k];
     for (i, &index) in indices_to_keep.iter().enumerate() {
@@ -1703,11 +1468,32 @@ fn find_solution_unrounded(
     }
     let x_scaled = p.get_real_x(x_expanded.clone());
     for i in 0..n {
-        let tkn = trading_asset_ids[i];
-        new_amm_deltas.insert(tkn, x_scaled[n + i]);
+        let tkn = p.all_asset_ids[i];
+        new_omnipool_deltas.insert(tkn, x_scaled[n + i]);
     }
     for j in 0..partial_intents_len {
-        exec_intent_deltas[j] = -x_scaled[4 * n + j];
+        exec_intent_deltas[j] = -x_scaled[4 * n + 2 * sigma + u + j];
+    }
+
+    /*
+    offset = 0
+    for amm in p.amm_list:
+        deltas = [x_scaled[4*n + offset]]
+        for t in range(len(amm.asset_list)):
+            deltas.append(x_scaled[4*n + offset + t + 1])
+        amm_deltas.append(deltas)
+        offset += len(amm.asset_list) + 1
+
+     */
+
+    let mut offset = 0;
+    for (pool_id, amm) in p.amm_store.stablepools.iter() {
+        let mut deltas = vec![x_scaled[4 * n + offset]];
+        for t in 0..amm.assets.len() {
+            deltas.push(x_scaled[4 * n + offset + t + 1]);
+        }
+        new_amm_deltas.push(deltas);
+        offset += amm.assets.len() + 1;
     }
 
     let obj_offset = if let Some(I) = p.get_indicators() {
@@ -1717,12 +1503,13 @@ fn find_solution_unrounded(
         0.0
     };
     (
-        new_amm_deltas,
+        new_omnipool_deltas,
         exec_intent_deltas,
         Array2::from_shape_vec((k, 1), x_expanded).unwrap(),
         p.scale_obj_amt(obj_value + obj_offset),
         p.scale_obj_amt(obj_value_dual + obj_offset),
         status.into(),
+        new_amm_deltas,
     )
 }
 

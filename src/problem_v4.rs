@@ -10,6 +10,7 @@ use float_next_after::NextAfter;
 use ndarray::{s, Array1, Array2, ArrayBase, Axis, Ix1, OwnedRepr};
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Neg;
 
 #[derive(PartialEq, Eq, Copy, Clone, Debug)]
 pub enum ProblemStatus {
@@ -351,10 +352,10 @@ impl ICEProblemV4 {
 
     pub fn get_tkn_liquidity(&self, tkn: AssetId) -> FloatType {
         if self.is_omnipool_asset(tkn) {
-            self.amm_store.omnipool.get(&tkn).unwrap().reserve
+            return self.amm_store.omnipool.get(&tkn).unwrap().reserve;
         } else {
             panic!("Not implemented yet!");
-            self.amm_store.stablepools.get(&tkn).unwrap().reserves[0]
+            //self.amm_store.stablepools.get(&tkn).unwrap().reserves[0]
         }
         panic!("Unknown token!");
     }
@@ -485,8 +486,10 @@ impl ICEProblemV4 {
     ) -> (Array2<FloatType>, Array1<FloatType>) {
         let k = 4 * self.n + 2 * self.sigma_sum + self.u + self.m;
         let profit_a = self.get_profit_A();
-        let mut a3 = -profit_a.slice(s![.., ..k]);
-        let mut i_coefs = -profit_a.slice(s![.., k..]);
+        let a3 = profit_a.slice(s![.., ..k]);
+        let mut a3 = a3.neg();
+        let i_coefs = profit_a.slice(s![.., k..]);
+        let mut i_coefs = i_coefs.neg();
         if allow_loss {
             //TODO: remove axis somehow
             let profit_i = self
@@ -673,7 +676,7 @@ impl ICEProblemV4 {
                     let b5jt = Array1::<FloatType>::zeros(1);
                     cones5.push(ZeroConeT(1));
                     a5j = ndarray::concatenate![Axis(0), a5j, a5jt];
-                    b5j = b5j.append(Axis(0), &b5jt);
+                    b5j = b5j.append(Axis(0), b5jt.into());
                 } else {
                     let mut a5jt = Array2::<FloatType>::zeros((3, k));
                     a5jt[[0, 4 * n + 2 * sigma + l + t]] = -1.;

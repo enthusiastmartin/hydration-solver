@@ -78,6 +78,8 @@ pub(crate) fn process_data(info: Vec<crate::types::Asset>) -> AmmStore {
                         pool_id,
                         assets: vec![asset_id],
                         reserves: vec![reserve],
+                        shares: 0.0, //TODO: add shares
+                        d: 0.0,      //TODO: add D
                         fee,
                         amplification,
                     });
