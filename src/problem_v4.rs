@@ -79,7 +79,8 @@ pub(crate) struct ICEProblemV4 {
     pub force_amm_approx: Option<Vec<Vec<AmmApprox>>>,
 
     pub last_omnipool_deltas: Option<BTreeMap<AssetId, FloatType>>,
-    pub last_amm_deltas: Option<BTreeMap<AssetId, FloatType>>,
+    //pub last_amm_deltas: Option<BTreeMap<AssetId, FloatType>>,
+    pub last_amm_deltas: Option<Vec<Vec<FloatType>>>,
 
     pub step_params: StepParams,
     pub fee_match: FloatType,
@@ -321,6 +322,18 @@ impl ICEProblemV4 {
             panic!("No amm approx found!");
         }
     }
+
+    pub fn get_c(&self) -> Array1<FloatType> {
+        self.step_params._C.as_ref().cloned().unwrap()
+    }
+
+    pub fn get_b(&self) -> Array1<FloatType> {
+        self.step_params._B.as_ref().cloned().unwrap()
+    }
+
+    pub fn get_s(&self) -> Vec<FloatType> {
+        self.step_params._S.as_ref().cloned().unwrap()
+    }
 }
 
 #[derive(Eq, PartialEq, Copy, Clone, Debug)]
@@ -501,14 +514,17 @@ impl ICEProblemV4 {
             //i_coefs = i_coefs.remove_axis(Axis(0));
         }
         let a3_trimmed = if let Some(indices) = indices_to_keep {
-            a3.slice(s![.., indices]).to_owned()
+            //a3.slice(s![.., indices]).to_owned()
+            a3.select(Axis(1), &indices)
         } else {
             a3.to_owned()
         };
         let b3 = if self.r == 0 {
             Array1::zeros(a3_trimmed.shape()[0])
         } else {
-            -i_coefs.dot(&self.step_params.I)
+            // TODO: how ?
+            //-i_coefs.dot(&self.get_indicators().unwrap())
+            panic!("not sure how to do this yet")
         };
         (a3_trimmed, b3)
     }
@@ -676,7 +692,8 @@ impl ICEProblemV4 {
                     let b5jt = Array1::<FloatType>::zeros(1);
                     cones5.push(ZeroConeT(1));
                     a5j = ndarray::concatenate![Axis(0), a5j, a5jt];
-                    b5j = b5j.append(Axis(0), b5jt.into());
+                    //b5j = b5j.append(Axis(0), (&b5jt).into()).unwrap();
+                    b5j = ndarray::concatenate![Axis(0), b5j, b5jt];
                 } else {
                     let mut a5jt = Array2::<FloatType>::zeros((3, k));
                     a5jt[[0, 4 * n + 2 * sigma + l + t]] = -1.;
@@ -686,7 +703,8 @@ impl ICEProblemV4 {
                     let b5jt = Array1::<FloatType>::zeros(3);
                     cones5.push(ExponentialConeT());
                     a5j = ndarray::concatenate![Axis(0), a5j, a5jt];
-                    b5j = b5j.append(Axis(0), &b5jt);
+                    b5j = ndarray::concatenate![Axis(0), b5j, b5jt];
+                    //b5j = b5j.append(Axis(0), &b5jt).unwrap();
                 }
             }
             let mut a5j_final = Array2::<FloatType>::zeros((1, k));
@@ -720,7 +738,7 @@ pub struct SetupParams {
     pub clear_amm_approx: bool,
 
     pub omnipool_deltas: Option<BTreeMap<AssetId, FloatType>>,
-    pub amm_deltas: Option<BTreeMap<AssetId, FloatType>>,
+    pub amm_deltas: Option<Vec<Vec<FloatType>>>,
 }
 
 #[derive(PartialEq, Eq, Copy, Clone, Debug)]
@@ -736,6 +754,7 @@ impl SetupParams {
         SetupParams {
             indicators: None,
             omnipool_flags: None,
+            amm_flags: None,
             sell_maxes: None,
             force_omnipool_approx: None,
             force_amm_approx: None,
@@ -744,6 +763,9 @@ impl SetupParams {
             clear_sell_maxes: true,
             clear_indicators: true,
             clear_omnipool_approx: true,
+            clear_amm_approx: false,
+            omnipool_deltas: None,
+            amm_deltas: None,
         }
     }
     pub fn with_indicators(mut self, indicators: Vec<usize>) -> Self {
@@ -1338,19 +1360,17 @@ impl StepParams {
         if let Some(flags) = &problem.amm_directional_flags {
             for (&pool_id, flag) in flags.iter() {
                 let mut new_list = Vec::new();
-                for &f in flag {
-                    match f {
-                        -1 => {
-                            new_list.push(Direction::Sell);
-                        }
-                        1 => {
-                            new_list.push(Direction::Buy);
-                        }
-                        0 => {
-                            new_list.push(Direction::Neither);
-                        }
-                        _ => {}
+                match flag {
+                    -1 => {
+                        new_list.push(Direction::Sell);
                     }
+                    1 => {
+                        new_list.push(Direction::Buy);
+                    }
+                    0 => {
+                        new_list.push(Direction::Neither);
+                    }
+                    _ => {}
                 }
                 amm_directions.push(new_list);
             }
@@ -1600,14 +1620,15 @@ impl StepParams {
             .collect::<Vec<Vec<FloatType>>>()
             .iter()
             .flatten()
+            .cloned()
             .collect::<Vec<FloatType>>();
 
         let partial_intent_prices: Vec<FloatType> = problem.get_partial_intent_prices();
         let profit_y_coefs = ndarray::Array2::zeros((problem.asset_count, n));
-        let profit_x_coefs = ndarray::Array2::zeros((problem.asset_count, n));
+        let mut profit_x_coefs = ndarray::Array2::zeros((problem.asset_count, n));
         //let profit_x_coefs = -Array2::<FloatType>::eye(n);
         let profit_lrna_lambda_coefs = ndarray::Array2::zeros((problem.asset_count, n));
-        let profit_lambda_coefs = ndarray::Array2::zeros((problem.asset_count, n));
+        let mut profit_lambda_coefs = ndarray::Array2::zeros((problem.asset_count, n));
 
         for (i, tkn) in problem.all_asset_ids.iter().enumerate() {
             if problem.is_omnipool_asset(*tkn) {
@@ -1631,7 +1652,7 @@ impl StepParams {
 
         let profit_X_coefs = problem.rho.clone() - problem.psi.clone();
 
-        let diag_fees = Array2::from_diag(&stableswap_fees);
+        let diag_fees = Array2::from_diag(&ndarray::Array1::from_vec(stableswap_fees));
         let profit_L_coefs = problem.psi.clone().dot(&diag_fees);
 
         let profit_a_coefs = ndarray::Array2::zeros((problem.asset_count, problem.u));
@@ -1727,7 +1748,19 @@ impl StepParams {
                 .map(|&tkn| scaling[&tkn])
                 .collect::<Vec<FloatType>>(),
         );
-        self._C = Some(problem.rho.clone().t().dot(&Array1::from(self._S.clone())));
-        self._B = Some(problem.psi.clone().t().dot(&Array1::from(self._S.clone())));
+        self._C = Some(
+            problem
+                .rho
+                .clone()
+                .t()
+                .dot(&Array1::from(self._S.as_ref().unwrap().clone())),
+        );
+        self._B = Some(
+            problem
+                .psi
+                .clone()
+                .t()
+                .dot(&Array1::from(self._S.as_ref().unwrap().clone())),
+        );
     }
 }

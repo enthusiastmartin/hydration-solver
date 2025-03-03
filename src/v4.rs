@@ -205,7 +205,7 @@ impl SolverV4 {
 
         dbg!(n, m, r, sigma);
 
-        dbg!(problem.indicators);
+        //dbg!(problem.indicators);
 
         let inf = FLOAT_INF;
 
@@ -218,8 +218,8 @@ impl SolverV4 {
         let mut best_intent_deltas: Vec<FloatType> = Vec::with_capacity(m); // m size
         let mut best_omnipool_deltas: BTreeMap<AssetId, FloatType> = BTreeMap::new(); // should be m size
 
-        let mut best_amm_deltas: BTreeMap<AssetId, FloatType> = BTreeMap::new(); // should be m size
-                                                                                 //let milp_ob = -inf;
+        let mut best_amm_deltas: Vec<Vec<FloatType>> = vec![];
+        //let milp_ob = -inf;
 
         // Force small 	trades to execute
         // note this comes from initial solution which we skip for now
@@ -263,6 +263,7 @@ impl SolverV4 {
                 Z_U = obj;
                 y_best = iter_indicators.clone();
                 best_amm_deltas = amm_deltas.clone();
+                best_omnipool_deltas = omnipool_deltas.clone();
                 best_intent_deltas = intent_deltas.clone();
                 best_status = status;
             }
@@ -976,7 +977,7 @@ fn find_solution_unrounded(
 
     for i in 0..n {
         let tkn = p.omnipool_asset_ids[i];
-        let delta_pct = if let Some(delta) = p.last_omnipool_deltas.unwrap().get(&tkn) {
+        let delta_pct = if let Some(delta) = p.last_omnipool_deltas.as_ref().unwrap().get(&tkn) {
             if omnipool_directions.contains_key(&tkn) {
                 delta / p.get_tkn_liquidity(tkn)
             } else {
@@ -1078,8 +1079,8 @@ fn find_solution_unrounded(
 
     let mut offset = 0;
     for (i, (pool_id, amm)) in stablepools.iter().enumerate() {
-        let delta_pct = if let Some(delta) = p.get_last_amm_deltas().get(&i) {
-            delta[0] / amm.shares
+        let delta_pct = if let Some(delta) = &p.last_amm_deltas {
+            delta[i][0] / amm.shares
         } else {
             1.0
         };
@@ -1088,18 +1089,17 @@ fn find_solution_unrounded(
             A1i = Array2::<f64>::zeros((1, k));
             A1i[[0, 4 * n + sigma + offset]] = -1.0;
             cones1.push(NonnegativeConeT(1));
-            if let Some(directions) = amm_directions.get(&i) {
-                if directions[0] == Direction::Buy {
-                    let mut A1i_dir = Array2::<f64>::zeros((1, k));
-                    A1i_dir[[0, 4 * n + offset]] = -1.0;
-                    A1i = ndarray::concatenate![Axis(0), A1i, A1i_dir];
-                    cones1.push(NonnegativeConeT(1));
-                } else if directions[0] == Direction::Sell {
-                    let mut A1i_dir = Array2::<f64>::zeros((1, k));
-                    A1i_dir[[0, 4 * n + offset]] = 1.0;
-                    A1i = ndarray::concatenate![Axis(0), A1i, A1i_dir];
-                    cones1.push(NonnegativeConeT(1));
-                }
+            let directions = amm_directions[i].clone();
+            if directions[0] == Direction::Buy {
+                let mut A1i_dir = Array2::<f64>::zeros((1, k));
+                A1i_dir[[0, 4 * n + offset]] = -1.0;
+                A1i = ndarray::concatenate![Axis(0), A1i, A1i_dir];
+                cones1.push(NonnegativeConeT(1));
+            } else if directions[0] == Direction::Sell {
+                let mut A1i_dir = Array2::<f64>::zeros((1, k));
+                A1i_dir[[0, 4 * n + offset]] = 1.0;
+                A1i = ndarray::concatenate![Axis(0), A1i, A1i_dir];
+                cones1.push(NonnegativeConeT(1));
             }
         } else {
             A1i = Array2::<f64>::zeros((2, k));
@@ -1108,8 +1108,8 @@ fn find_solution_unrounded(
             cones1.push(ZeroConeT(2));
         }
         for (j, tkn) in amm.assets.iter().enumerate() {
-            let delta_pct = if let Some(delta) = p.get_last_amm_deltas().get(&i) {
-                delta[j + 1] / p.get_tkn_liquidity(*tkn)
+            let delta_pct = if let Some(delta) = &p.last_amm_deltas {
+                delta[i][j + 1] / p.get_tkn_liquidity(*tkn)
             } else {
                 1.0
             };
@@ -1117,18 +1117,17 @@ fn find_solution_unrounded(
             if trading_asset_ids.contains(tkn) && delta_pct.abs() > 1e-11 {
                 A1ij[[0, 4 * n + sigma + offset + j + 1]] = -1.0;
                 cones1.push(NonnegativeConeT(1));
-                if let Some(directions) = amm_directions.get(&i) {
-                    if directions[j + 1] == Direction::Buy {
-                        let mut A1ij_dir = Array2::<f64>::zeros((1, k));
-                        A1ij_dir[[0, 4 * n + offset + j + 1]] = -1.0;
-                        A1ij = ndarray::concatenate![Axis(0), A1ij, A1ij_dir];
-                        cones1.push(NonnegativeConeT(1));
-                    } else if directions[j + 1] == Direction::Sell {
-                        let mut A1ij_dir = Array2::<f64>::zeros((1, k));
-                        A1ij_dir[[0, 4 * n + offset + j + 1]] = 1.0;
-                        A1ij = ndarray::concatenate![Axis(0), A1ij, A1ij_dir];
-                        cones1.push(NonnegativeConeT(1));
-                    }
+                let directions = amm_directions[i].clone();
+                if directions[j + 1] == Direction::Buy {
+                    let mut A1ij_dir = Array2::<f64>::zeros((1, k));
+                    A1ij_dir[[0, 4 * n + offset + j + 1]] = -1.0;
+                    A1ij = ndarray::concatenate![Axis(0), A1ij, A1ij_dir];
+                    cones1.push(NonnegativeConeT(1));
+                } else if directions[j + 1] == Direction::Sell {
+                    let mut A1ij_dir = Array2::<f64>::zeros((1, k));
+                    A1ij_dir[[0, 4 * n + offset + j + 1]] = 1.0;
+                    A1ij = ndarray::concatenate![Axis(0), A1ij, A1ij_dir];
+                    cones1.push(NonnegativeConeT(1));
                 }
             } else {
                 A1ij = Array2::<f64>::zeros((2, k));
@@ -1286,7 +1285,7 @@ fn find_solution_unrounded(
 
     let A4_trimmed = A4.select(Axis(1), &indices_to_keep);
 
-    let (A5_trimmed, b5, cones5) = p.get_stableswap_bounds(Some(indices_to_keep.clone()));
+    let (A5_trimmed, b5, cones5) = p.get_stableswap_bounds(indices_to_keep.clone());
 
     // TODO: continue from here with A6 and A7
 
@@ -1438,10 +1437,10 @@ fn find_solution_unrounded(
     let b = ndarray::concatenate![Axis(0), b1, b2, b3, b4, b5, b6, b7];
 
     let mut cones = vec![];
-    cones.extend(cones1.into_iter().flatten());
+    cones.extend(cones1.into_iter());
     cones.push(cone2);
     cones.push(cone3);
-    cones.extend(cones4.into_iter().flatten());
+    cones.extend(cones4.into_iter());
     cones.push(cone6);
     cones.push(cone7);
 
