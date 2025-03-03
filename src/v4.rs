@@ -271,7 +271,7 @@ impl SolverV4 {
             if status != ProblemStatus::PrimalInfeasible && status != ProblemStatus::DualInfeasible
             {
                 //TODO: verify if this is correct
-                let x2 = Array2::from_shape_vec((1, 4 * n + m), x).unwrap();
+                let x2 = Array2::from_shape_vec((1, 4 * n + 3 * sigma + m), x).unwrap();
                 x_list = ndarray::concatenate![Axis(0), x_list, x2];
             }
 
@@ -280,13 +280,13 @@ impl SolverV4 {
                 .iter()
                 .enumerate()
                 .filter(|&(_, &val)| val == 1)
-                .map(|(idx, _)| idx + 4 * n + m)
+                .map(|(idx, _)| idx + 4 * n + 3 * sigma + m) // TODO: idx here is not really correct?!!
                 .collect();
             let NK: Vec<usize> = iter_indicators
                 .iter()
                 .enumerate()
                 .filter(|&(_, &val)| val == 0)
-                .map(|(idx, _)| idx + 4 * n + m)
+                .map(|(idx, _)| idx + 4 * n + 3 * sigma + m) // TODO: idx here is not really correct?!!
                 .collect();
             let mut IC_A = Array2::<f64>::zeros((1, k_milp));
             for &i in &BK {
@@ -307,7 +307,7 @@ impl SolverV4 {
 
             problem.set_up_problem(SetupParams::new());
             let (
-                amm_deltas,
+                omnipool_deltas,
                 partial_intent_deltas,
                 indicators,
                 s_new_a,
@@ -443,6 +443,7 @@ fn solve_inclusion_problem(
     f64,
     bool,
 ) {
+    //TODO: adjust this Part 3
     let asset_list = p.trading_asset_ids.clone();
     let tkn_list = vec![1u32]
         .into_iter()
@@ -812,7 +813,7 @@ fn find_good_solution(
     };
     trade_pcts.extend(vec![1.0; r]);
 
-    //TODO: continue here then
+    //TODO: continue here then  Part 1
 
     let amm_deltas = vec![];
     (
@@ -1287,8 +1288,6 @@ fn find_solution_unrounded(
 
     let (A5_trimmed, b5, cones5) = p.get_stableswap_bounds(indices_to_keep.clone());
 
-    // TODO: continue from here with A6 and A7
-
     let mut A6 = Array2::<f64>::zeros((0, k));
     /*
        for i in range(n):
@@ -1473,17 +1472,6 @@ fn find_solution_unrounded(
     for j in 0..partial_intents_len {
         exec_intent_deltas[j] = -x_scaled[4 * n + 2 * sigma + u + j];
     }
-
-    /*
-    offset = 0
-    for amm in p.amm_list:
-        deltas = [x_scaled[4*n + offset]]
-        for t in range(len(amm.asset_list)):
-            deltas.append(x_scaled[4*n + offset + t + 1])
-        amm_deltas.append(deltas)
-        offset += len(amm.asset_list) + 1
-
-     */
 
     let mut offset = 0;
     for (pool_id, amm) in p.amm_store.stablepools.iter() {

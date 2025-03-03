@@ -376,6 +376,7 @@ impl ICEProblemV4 {
 
 impl ICEProblemV4 {
     pub fn get_real_x(&self, x: Vec<FloatType>) -> Vec<FloatType> {
+        //TODO: adjust this Part 2
         let n = self.n;
         let m = self.m;
         let r = self.r;
