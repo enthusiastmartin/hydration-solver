@@ -497,17 +497,37 @@ impl ICEProblemV4 {
         ];
         scaled_x.concat()
     }
+    /*
+       def get_scaled_x(self, x):
+       n, m, r, sigma = self.n, self.m, self.r, self.sigma
+       assert len(x) in [4 * n + 3 * sigma + m, 4 * n + 3 * sigma + m + r]
+       scaled_yi = [x[i] / self._scaling["LRNA"] for i in range(n)]
+       scaled_xi = [x[n + i] / self._scaling[tkn] for i, tkn in enumerate(self.omnipool.asset_list)]
+       scaled_lrna_lambda = [x[2*n + i] / self._scaling["LRNA"] for i in range(n)]
+       scaled_lambda = [x[3 * n + i] / self._scaling[tkn] for i, tkn in enumerate(self.omnipool.asset_list)]
+       stableswap_scalars = (self._rho + self._psi).T @ self._S
+       scaled_X = x[4 * n: 4 * n + sigma] / stableswap_scalars
+       scaled_L = x[4 * n + sigma: 4 * n + 2 * sigma] / stableswap_scalars
+       scaled_a = x[4 * n + 2 * sigma: 4 * n + 3 * sigma]
+       scaled_d = [x[4 * n + 3 * sigma + j] / self._scaling[intent['tkn_sell']] for j, intent in enumerate(self.partial_intents)]
+       scaled_x = np.concatenate([scaled_yi, scaled_xi, scaled_lrna_lambda, scaled_lambda, scaled_X, scaled_L, scaled_a, scaled_d])
+       if len(x) == 4 * n + 3 * sigma + m + r:
+           scaled_I = [x[4 * n + m + l] for l in range(r)]
+           scaled_x = np.concatenate([scaled_x, scaled_I])
+       return scaled_x
+    */
 
     pub fn get_scaled_x(&self, x: Vec<FloatType>) -> Vec<FloatType> {
         let n = self.n;
         let m = self.m;
         let r = self.r;
-        assert!(x.len() == 4 * n + m || x.len() == 4 * n + m + r);
+        let sigma = self.sigma_sum;
+        assert!(x.len() == 4 * n + 3 * sigma + m || x.len() == 4 * n + 3 * sigma + m + r);
 
         let scaling = self.get_scaling();
         let scaled_yi: Vec<FloatType> = (0..n).map(|i| x[i] / scaling[&1u32]).collect(); // Assuming 1u32 represents 'LRNA'
         let scaled_xi: Vec<FloatType> = self
-            .trading_asset_ids
+            .omnipool_asset_ids
             .iter()
             .enumerate()
             .map(|(i, &tkn)| x[n + i] / scaling[&tkn])
@@ -515,54 +535,62 @@ impl ICEProblemV4 {
         let scaled_lrna_lambda: Vec<FloatType> =
             (0..n).map(|i| x[2 * n + i] / scaling[&1u32]).collect();
         let scaled_lambda: Vec<FloatType> = self
-            .trading_asset_ids
+            .omnipool_asset_ids
             .iter()
             .enumerate()
             .map(|(i, &tkn)| x[3 * n + i] / scaling[&tkn])
+            .collect();
+        let _s = Array2::from_shape_vec((self.asset_count, sigma), self.get_s().clone()).unwrap(); // TODO: is this ok ?!
+        let stableswap_scalars = (self.rho.clone() + self.psi.clone()).t().dot(&_s);
+        let scaled_X: Vec<FloatType> = x[4 * n..4 * n + sigma]
+            .iter()
+            .zip(stableswap_scalars.iter())
+            .map(|(x, scaling)| x / scaling)
+            .collect();
+        let scaled_L: Vec<FloatType> = x[4 * n + sigma..4 * n + 2 * sigma]
+            .iter()
+            .zip(stableswap_scalars.iter())
+            .map(|(x, scaling)| x / scaling)
+            .collect();
+        let scaled_a: Vec<FloatType> = x[4 * n + 2 * sigma..4 * n + 3 * sigma]
+            .iter()
+            .map(|&a| a)
             .collect();
         let scaled_d: Vec<FloatType> = self
             .partial_indices
             .iter()
             .enumerate()
-            .map(|(j, &idx)| x[4 * n + j] / scaling[&self.intents[idx].asset_in])
+            .map(|(j, &idx)| x[4 * n + 3 * sigma + j] / scaling[&self.intents[idx].asset_in])
             .collect();
-
-        let mut scaled_x = [
-            scaled_yi,
-            scaled_xi,
-            scaled_lrna_lambda,
-            scaled_lambda,
-            scaled_d,
-        ]
-        .concat();
-        if x.len() == 4 * n + m + r {
-            let scaled_I: Vec<FloatType> = (0..r).map(|l| x[4 * n + m + l]).collect();
-            scaled_x.extend(scaled_I);
+        if x.len() == 4 * n + 3 * sigma + m + r {
+            let scaled_I = (0..r).map(|l| x[4 * n + m + l]).collect::<Vec<FloatType>>();
+            let mut scaled_x = vec![
+                scaled_yi,
+                scaled_xi,
+                scaled_lrna_lambda,
+                scaled_lambda,
+                scaled_X,
+                scaled_L,
+                scaled_a,
+                scaled_d,
+                scaled_I,
+            ];
+            scaled_x.concat()
+        } else {
+            let mut scaled_x = vec![
+                scaled_yi,
+                scaled_xi,
+                scaled_lrna_lambda,
+                scaled_lambda,
+                scaled_X,
+                scaled_L,
+                scaled_a,
+                scaled_d,
+            ];
+            scaled_x.concat()
         }
-        scaled_x
     }
 }
-/*
-implement this for problem
-
-def _get_leftover_bounds(p, allow_loss, indices_to_keep=None):
-   k = 4 * p.n + 2 * p.sigma + p.u + p.m
-   profit_A = p.get_profit_A()
-   A3 = -profit_A[:, :k]
-   I_coefs = -profit_A[:, k:]
-   # if we want to allow a loss in tkn_profit, we remove the appropriate row
-   if allow_loss:
-       profit_i = p.asset_list.index(p.tkn_profit)
-       A3 = np.delete(A3, profit_i+1, axis=0)
-       I_coefs = np.delete(I_coefs, profit_i+1, axis=0)
-   A3_trimmed = A3[:, indices_to_keep] if indices_to_keep is not None else A3
-   if p.r == 0:
-       b3 = np.zeros(A3_trimmed.shape[0])
-   else:
-       b3 = -I_coefs @ p.I
-   return A3_trimmed, b3
-*/
-
 impl ICEProblemV4 {
     pub(crate) fn get_leftover_bounds(
         &self,
@@ -601,101 +629,6 @@ impl ICEProblemV4 {
         (a3_trimmed, b3)
     }
 }
-
-/*
-implement this for problem
-
-
-def _get_stableswap_bounds(p, indices_to_keep=None):
-    # CFMM invariants must be respected
-    n, sigma, u, m, N = p.n, p.sigma, p.u, p.m, p.N
-    k = 4 * n + 2 * sigma + u + m
-
-    A5 = np.zeros((0, k))
-    b5 = np.array([])
-    cones5 = []
-    C = p.get_C()
-    B = p.get_B()
-    share_indices = p.get_share_indices()
-    for j, amm in enumerate(p.amm_list):
-        if not isinstance(amm, StableSwapPoolState):
-            raise
-        l = share_indices[j]
-        ann = amm.ann
-        s0 = amm.shares
-        D0 = amm.d
-        n_amm = len(amm.asset_list)
-        sum_assets = sum([amm.liquidity[tkn] for tkn in amm.asset_list])
-        # TODO: think about indexing of auxiliary variables
-        approx = p.get_amm_approx(j)
-        # D0' = D_0 * (1 - 1/ann)
-        D0_prime = D0 * (1 - 1 / ann)
-        # a0 ~= -delta_s/s0 + [1 / (sum x_i^0 - D0') * sum delta_x_i - (D0'/s0) / (sum x_i^0 - D0') * delta_s]
-        denom = sum_assets - D0_prime
-        if approx[0] == "linear":
-            A5j = np.zeros((1, k))
-            A5j[0, 4 * n + 2 * sigma + l] = 1  # a_{j,0} coefficient
-            A5j[0, 4 * n + l] = (1 + D0_prime / denom) * C[l] / s0  # delta_s coefficient
-            for t in range(1, n_amm + 1):
-                A5j[0, 4*n + l + t] = -B[l+t] / denom  # delta_x_i coefficient
-            b5j = np.array([0])
-            cones5.append(cb.ZeroConeT(1))
-        else:
-            A5j = np.zeros((3, k))
-            b5j = np.array([0, 0, 0])
-            # x = a_{j,0}
-            A5j[0, 4*n + 2*sigma + l] = -1
-            # y = 1 + C_jS_j / s_0
-            A5j[1, 4*n + l] = -C[l] / s0
-            b5j[1] = 1
-            # z = An^n / D_0 sum(x_i^0 + B_i X_i) + (1 - An^n)(1 + C_jS_j / s_0)
-            A5j[2, 4 * n + l] = D0_prime * C[l] / denom / s0
-            for t in range(1, n_amm + 1):
-                A5j[2, 4*n + l + t] = -B[l+t] / denom
-            b5j[2] = 1
-            cones5.append(cb.ExponentialConeT())
-
-        for t in range(1, n_amm + 1):
-            x0 = amm.liquidity[amm.asset_list[t - 1]]
-            if approx[t] == "linear":
-                A5jt = np.zeros((1, k))
-                A5jt[0, 4 * n + 2 * sigma + l + t] = 1  # a_{j,0} coefficient
-                A5jt[0, 4 * n + l] = C[l] / s0  # delta_s coefficient
-                A5jt[0, 4 * n + l + t] = -B[l + t] / x0  # delta_x_i coefficient
-                b5jt = np.array([0])
-                cone5jt = cb.ZeroConeT(1)
-            else:
-                A5jt = np.zeros((3, k))
-                b5jt = np.zeros(3)
-                # x = a_{j,t}
-                A5jt[0, 4 * n + 2 * sigma + l + t] = -1
-                # y = 1 + C_jS_j / s_0
-                A5jt[1, 4 * n + l] = -C[l] / s0
-                b5jt[1] = 1
-                # z = (x_t^0 + B_t X_t) / D_0
-                A5jt[2, 4 * n + l + t] = -B[l + t] / x0
-                b5jt[2] = 1
-                cone5jt = cb.ExponentialConeT()
-            cones5.append(cone5jt)
-            A5j = np.vstack([A5j, A5jt])
-            b5j = np.append(b5j, np.array(b5jt))
-
-        A5j_final = np.zeros((1, k))
-        # coef = 0
-        # for tkn in amm.asset_list:
-        #     coef += np.log(n_amm * amm.liquidity[tkn] / D0)
-        # coef += np.log(c)
-        # A5j_final[0, 4 * n + l] = -coef * C[l] / s0
-        for t in range(n_amm + 1):
-            A5j_final[0, 4 * n + 2 * sigma + l + t] = -1
-        # b5j_final = np.array([coef])
-        b5j_final = np.array([0])
-        cones5.append(cb.NonnegativeConeT(1))
-
-        A5 = np.vstack([A5, A5j, A5j_final])
-        b5 = np.concatenate([b5, b5j, b5j_final])
-    return A5[:, indices_to_keep], b5, cones5
- */
 
 impl ICEProblemV4 {
     pub(crate) fn get_stableswap_bounds(
