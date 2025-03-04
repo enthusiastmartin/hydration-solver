@@ -1459,18 +1459,18 @@ impl StepParams {
 type A1T = ArrayBase<OwnedRepr<FloatType>, Ix1>;
 
 impl StepParams {
-    fn set_tau_phi(&mut self, problem: &ICEProblemV4) {
-        let n = problem.trading_asset_ids.len();
-        let m = problem.partial_indices.len();
-        let r = problem.full_indices.len();
+    pub fn set_tau_phi(&mut self, problem: &ICEProblemV4) {
+        let big_n = problem.asset_count;
+        let m = problem.m;
+        let r = problem.r;
 
-        let mut tau1 = ndarray::Array2::zeros((n + 1, m + r));
-        let mut phi1 = ndarray::Array2::zeros((n + 1, m + r));
-        //let mut tau2 = ndarray::Array2::zeros((n + 1, r));
-        //let mut phi2 = ndarray::Array2::zeros((n + 1, r));
+        let mut tau1 = ndarray::Array2::zeros((big_n + 1, m));
+        let mut phi1 = ndarray::Array2::zeros((big_n + 1, m));
+        let mut tau2 = ndarray::Array2::zeros((big_n + 1, r));
+        let mut phi2 = ndarray::Array2::zeros((big_n + 1, r));
 
         let mut tkn_list = vec![1u32];
-        tkn_list.extend(problem.trading_asset_ids.iter().cloned());
+        tkn_list.extend(problem.all_asset_ids.iter().cloned());
 
         for (j, &idx) in problem.partial_indices.iter().enumerate() {
             let intent = &problem.intents[idx];
@@ -1480,8 +1480,6 @@ impl StepParams {
             let tkn_buy_idx = tkn_list.iter().position(|&tkn| tkn == tkn_buy).unwrap();
             tau1[(tkn_sell_idx, j)] = 1.;
             phi1[(tkn_buy_idx, j)] = 1.;
-            //tau1.set_entry((tkn_sell_idx, j), 1.);
-            //phi1.set_entry((tkn_buy_idx, j), 1.);
         }
         for (l, &idx) in problem.full_indices.iter().enumerate() {
             let intent = &problem.intents[idx];
@@ -1489,16 +1487,12 @@ impl StepParams {
             let tkn_buy = intent.asset_out;
             let tkn_sell_idx = tkn_list.iter().position(|&tkn| tkn == tkn_sell).unwrap();
             let tkn_buy_idx = tkn_list.iter().position(|&tkn| tkn == tkn_buy).unwrap();
-            tau1[(tkn_sell_idx, l + m)] = 1.;
-            phi1[(tkn_buy_idx, l + m)] = 1.;
-            //tau2[(tkn_sell_idx, l)] = 1.;
-            //phi2[(tkn_buy_idx, l)] = 1.;
-            //tau2.set_entry((tkn_sell_idx, l), 1.);
-            //phi2.set_entry((tkn_buy_idx, l), 1.);
+            tau2[(tkn_sell_idx, l)] = 1.;
+            phi2[(tkn_buy_idx, l)] = 1.;
         }
 
-        self.tau = Some(tau1);
-        self.phi = Some(phi1);
+        self.tau = Some(ndarray::concatenate![Axis(1), tau1, tau2]);
+        self.phi = Some(ndarray::concatenate![Axis(1), phi1, phi2]);
     }
 
     pub fn set_coefficients(&mut self, problem: &ICEProblemV4) {
@@ -1613,8 +1607,10 @@ impl StepParams {
 
         let profit_X_coefs = problem.rho.clone() - problem.psi.clone();
 
-        let diag_fees = Array2::from_diag(&ndarray::Array1::from_vec(stableswap_fees));
-        let profit_L_coefs = problem.psi.clone().dot(&diag_fees);
+        //TODO: add fees somehow, this panics due to incompatible shapes!!
+        //let diag_fees = Array2::from_diag(&ndarray::Array1::from_vec(stableswap_fees));
+        //let profit_L_coefs = problem.psi.clone().dot(&diag_fees);
+        let profit_L_coefs = ndarray::Array2::zeros((problem.asset_count, problem.sigma_sum));
 
         let profit_a_coefs = ndarray::Array2::zeros((problem.asset_count, problem.u));
 
