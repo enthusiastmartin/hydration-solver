@@ -612,6 +612,8 @@ impl ICEProblemV4 {
         let b = self.get_b();
         let share_indices = self.share_indices.clone();
 
+        //TODO: this causes panic with numerical error
+        /*
         for (j, amm) in self.amm_store.stablepools.iter().enumerate() {
             let l = share_indices[j];
             let ann = amm.ann();
@@ -681,6 +683,8 @@ impl ICEProblemV4 {
             b5 = ndarray::concatenate![Axis(0), b5, b5j, b5j_final];
             //b5 = b5.append(&b5j);
         }
+
+         */
         (a5.select(Axis(1), &indices_to_keep), b5, cones5)
     }
 }

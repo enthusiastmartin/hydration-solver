@@ -1091,6 +1091,8 @@ fn find_good_solution(
     };
     trade_pcts.extend(vec![1.0; r]);
 
+    //dbg!(&omnipool_deltas);
+    //dbg!(&p.omnipool_asset_ids);
     let mut approx_adjusted_ct = 0;
     if approx_amm_eqs
         && status != ProblemStatus::PrimalInfeasible
@@ -1112,30 +1114,38 @@ fn find_good_solution(
             }
         }
 
-        let mut stableswap_pcts = vec![];
+        let mut stableswap_pcts = Vec::new();
         for (i, amm) in p.amm_store.stablepools.iter().enumerate() {
-            let mut pcts = vec![];
-            let sum_delta_x = amm_deltas[i].iter().skip(1).sum::<f64>();
+            let mut pcts = Vec::new();
+            pcts.push(amm_deltas[i][0].abs() / amm.shares);
+
+            let sum_delta_x: f64 = (0..amm.assets.len())
+                .map(|j| amm_deltas[i][j + 1].abs())
+                .sum();
             pcts.push(sum_delta_x / amm.d);
-            pcts.extend(
-                amm_deltas[i]
-                    .iter()
-                    .skip(1)
-                    .zip(amm.assets.iter().skip(1))
-                    .enumerate()
-                    .map(|(idx, (delta, tkn))| delta.abs() / amm.reserves[idx + 1]),
-            );
+
+            for (j, tkn) in amm.assets.iter().enumerate() {
+                let delta = amm_deltas[i][j + 1].abs();
+                let liquidity = amm.reserves[j];
+                pcts.push(delta / liquidity);
+            }
+
             stableswap_pcts.push(pcts);
         }
 
+        let mut approx_adjusted_ct = 0;
+
         for (s, amm) in p.amm_store.stablepools.iter().enumerate() {
-            if force_amm_approx[s][0] == AmmApprox::Linear && stableswap_pcts[s][0] > 1e-5 {
+            if force_amm_approx[s][0] == AmmApprox::Linear
+                && f64::max(stableswap_pcts[s][0], stableswap_pcts[s][1]) > 1e-5
+            {
                 force_amm_approx[s][0] = AmmApprox::Full;
                 approx_adjusted_ct += 1;
             }
-            for (j, tkn) in amm.assets.iter().enumerate() {
+
+            for j in 0..amm.assets.len() {
                 if force_amm_approx[s][j + 1] == AmmApprox::Linear
-                    && stableswap_pcts[s][j + 1] > 1e-5
+                    && stableswap_pcts[s][j + 2] > 1e-5
                 {
                     force_amm_approx[s][j + 1] = AmmApprox::Full;
                     approx_adjusted_ct += 1;
@@ -1213,30 +1223,35 @@ fn find_good_solution(
                 }
             }
 
-            let mut stableswap_pcts = vec![];
+            let mut stableswap_pcts = Vec::new();
             for (i, amm) in p.amm_store.stablepools.iter().enumerate() {
-                let mut pcts = vec![];
-                let sum_delta_x = amm_deltas[i].iter().skip(1).sum::<f64>();
+                let mut pcts = Vec::new();
+                pcts.push(amm_deltas[i][0].abs() / amm.shares);
+
+                let sum_delta_x: f64 = (0..amm.assets.len())
+                    .map(|j| amm_deltas[i][j + 1].abs())
+                    .sum();
                 pcts.push(sum_delta_x / amm.d);
-                pcts.extend(
-                    amm_deltas[i]
-                        .iter()
-                        .skip(1)
-                        .zip(amm.assets.iter().skip(1))
-                        .enumerate()
-                        .map(|(idx, (delta, tkn))| delta.abs() / amm.reserves[idx + 1]),
-                );
+
+                for (j, tkn) in amm.assets.iter().enumerate() {
+                    let delta = amm_deltas[i][j + 1].abs();
+                    let liquidity = amm.reserves[j];
+                    pcts.push(delta / liquidity);
+                }
                 stableswap_pcts.push(pcts);
             }
 
             for (s, amm) in p.amm_store.stablepools.iter().enumerate() {
-                if force_amm_approx[s][0] == AmmApprox::Linear && stableswap_pcts[s][0] > 1e-5 {
+                if force_amm_approx[s][0] == AmmApprox::Linear
+                    && f64::max(stableswap_pcts[s][0], stableswap_pcts[s][1]) > 1e-5
+                {
                     force_amm_approx[s][0] = AmmApprox::Full;
                     approx_adjusted_ct += 1;
                 }
-                for (j, tkn) in amm.assets.iter().enumerate() {
+
+                for j in 0..amm.assets.len() {
                     if force_amm_approx[s][j + 1] == AmmApprox::Linear
-                        && stableswap_pcts[s][j + 1] > 1e-5
+                        && stableswap_pcts[s][j + 2] > 1e-5
                     {
                         force_amm_approx[s][j + 1] = AmmApprox::Full;
                         approx_adjusted_ct += 1;
@@ -1351,118 +1366,27 @@ fn find_solution_unrounded(
     let (n, m, r) = (p.n, p.m, p.r);
     let (big_n, sigma, s, u) = (p.asset_count, p.sigma_sum, p.s, p.u);
 
-    /*
-    if p.get_indicators_len() as f64 + p.partial_sell_maxs.iter().sum::<f64>() == 0.0 {
-        return (
-            p.trading_asset_ids.iter().map(|&tkn| (tkn, 0.0)).collect(),
-            vec![0.0; p.partial_indices.len()],
-            Array2::zeros((4 * p.n + p.m, 1)),
-            0.0,
-            0.0,
-            ProblemStatus::Solved,
-        );
-    }
-     */
-
     //let full_intents = &p.full_intents;
     let partial_intents_len = p.partial_indices.len();
     let trading_asset_ids = &p.trading_asset_ids;
     let (n, m, r) = (p.n, p.m, p.r);
 
-    /*
-    if partial_intents_len + p.get_indicators_len() == 0 {
-        return (
-            asset_list.iter().map(|&tkn| (tkn, 0.0)).collect(),
-            vec![],
-            Array2::zeros((4 * n, 1)),
-            0.0,
-            0.0,
-            ProblemStatus::Solved,
-        );
-    }
-     */
-
     let (omnipool_directions, amm_directions) = p.get_directions();
     let k = 4 * n + 2 * sigma + m + u;
     let mut indices_to_keep: Vec<usize> = (0..k).collect();
 
-    /*
-    for &tkn in directions.keys() {
-        if directions[&tkn] == Direction::Sell || directions[&tkn] == Direction::Neither {
-            indices_to_keep
-                .retain(|&i| i != 2 * n + asset_list.iter().position(|&x| x == tkn).unwrap());
-        }
-        if directions[&tkn] == Direction::Buy || directions[&tkn] == Direction::Neither {
-            indices_to_keep
-                .retain(|&i| i != 3 * n + asset_list.iter().position(|&x| x == tkn).unwrap());
-        }
-        if directions[&tkn] == Direction::Neither {
-            indices_to_keep.retain(|&i| i != asset_list.iter().position(|&x| x == tkn).unwrap());
-            indices_to_keep
-                .retain(|&i| i != n + asset_list.iter().position(|&x| x == tkn).unwrap());
-        }
-    }
-
-     */
-
     let k_real = indices_to_keep.len();
     let P_trimmed = CscMatrix::zeros((k_real, k_real));
-    let q_all = ndarray::Array::from(p.get_q());
 
-    let objective_I_coefs = q_all.slice(s![k..]);
-    let objective_I_coefs = objective_I_coefs.neg();
-    let q = q_all.slice(s![..k]);
-    let q = q.neg();
+    let q_all = p.get_q();
+    let objective_I_coefs: Vec<f64> = q_all[k..].iter().map(|&x| -x).collect();
+    let q: Vec<f64> = q_all[..k].iter().map(|&x| -x).collect();
     let q_trimmed: Vec<f64> = indices_to_keep.iter().map(|&i| q[i]).collect();
-
-    //let diff_coefs = Array2::<f64>::zeros((2 * n + m, 2 * n));
-    //let nonzero_coefs = -Array2::<f64>::eye(2 * n + m);
-    //let A1 = ndarray::concatenate![Axis(1), diff_coefs, nonzero_coefs];
 
     let mut A1 = Array2::<f64>::zeros((0, k));
     let mut cones1 = vec![];
-    /*
-    profit_i = p.asset_list.index(p.tkn_profit)
-    op_tradeable_indices = [i for i in range(n) if p.omnipool.asset_list[i] in p.trading_tkns]
-    if profit_i not in op_tradeable_indices:
-        op_tradeable_indices.append(profit_i)
-    for i in range(n):
-        tkn = p.omnipool.asset_list[i]
-        if tkn in omnipool_directions and tkn in p._last_omnipool_deltas:
-            delta_pct = p._last_omnipool_deltas[tkn] / p.omnipool.liquidity[tkn]  # possibly round to zero
-        else:
-            delta_pct = 1  # to avoid causing any rounding
-        if i in op_tradeable_indices and abs(delta_pct) > 1e-11:  # we need lambda_i >= 0, lrna_lambda_i >= 0
-            A1i = np.zeros((2, k))
-            A1i[0, 3 * n + i] = -1  # lambda_i
-            A1i[1, 2 * n + i] = -1  # lrna_lambda_i
-            cone1i = cb.NonnegativeConeT(2)
-            if p.omnipool.asset_list[i] in omnipool_directions:
-                if omnipool_directions[p.omnipool.asset_list[i]] == "buy":  # we need y_i <= 0, x_i >= 0
-                    A1i_dir = np.zeros((2, k))
-                    A1i_dir[0, i] = 1
-                    A1i_dir[1, n + i] = -1
-                    A1i = np.vstack([A1i, A1i_dir])
-                    cone1i = cb.NonnegativeConeT(4)
-                elif omnipool_directions[p.omnipool.asset_list[i]] == "sell":  # we need y_i >= 0, x_i <= 0
-                    A1i_dir = np.zeros((2, k))
-                    A1i_dir[0, i] = -1
-                    A1i_dir[1, n + i] = 1
-                    A1i = np.vstack([A1i, A1i_dir])
-                    cone1i = cb.NonnegativeConeT(4)
-
-        else:  # we need y_i = 0, x_i = 0, lambda_i = 0, lrna_lambda_i = 0
-            A1i = np.zeros((4, k))
-            A1i[0, i] = 1  # y_i
-            A1i[1, n + i] = 1  # x_i
-            A1i[2, 2 * n + i] = 1  # lrna_lambda_i
-            A1i[3, 3 * n + i] = 1  # lambda_i
-            cone1i = cb.ZeroConeT(4)
-        A1 = np.vstack([A1, A1i])
-        cones1.append(cone1i)
-     */
-
-    let profit_i = trading_asset_ids
+    let profit_i = p
+        .all_asset_ids
         .iter()
         .position(|&x| x == p.tkn_profit)
         .unwrap();
@@ -1525,63 +1449,6 @@ fn find_solution_unrounded(
         cones1.push(cone1i);
     }
 
-    /*
-    offset = 0
-    for i, amm in enumerate(amm_list):
-        if len(amm_directions) > 0 and len(p._last_amm_deltas) > 0:
-            delta_pct = p._last_amm_deltas[i][0] / amm.shares  # possibly round to zero
-        else:
-            delta_pct = 1  # to avoid causing any rounding
-        if amm.unique_id in p.trading_tkns and abs(delta_pct) > 1e-11:
-            A1i = np.zeros((1, k))
-            A1i[0, 4 * n + sigma + offset] = -1
-            cones1.append(cb.NonnegativeConeT(1))
-            if len(amm_directions) > 0:
-                if amm_directions[i][0] == "buy":  # X0 >= 0
-                    A1i_dir = np.zeros((1, k))
-                    A1i_dir[0, 4 * n + offset] = -1
-                    A1i = np.vstack([A1i, A1i_dir])
-                    cones1.append(cb.NonnegativeConeT(1))
-                elif amm_directions[i][0] == "sell":  # X0 <= 0
-                    A1i_dir = np.zeros((1, k))
-                    A1i_dir[0, 4 * n + offset] = 1
-                    A1i = np.vstack([A1i, A1i_dir])
-                    cones1.append(cb.NonnegativeConeT(1))
-        else:
-            A1i = np.zeros((2, k))
-            A1i[0, 4 * n + offset] = 1
-            A1i[1, 4 * n + sigma + offset] = 1
-            cones1.append(cb.ZeroConeT(2))
-        for j, tkn in enumerate(amm.asset_list):
-            if len(amm_directions) > 0 and len(p._last_amm_deltas) > 0:
-                delta_pct = p._last_amm_deltas[i][j+1] / amm.liquidity[tkn]  # possibly round to zero
-            else:
-                delta_pct = 1  # to avoid causing any rounding
-            if tkn in p.trading_tkns and abs(delta_pct) > 1e-11:
-                A1ij = np.zeros((1, k))
-                A1ij[0, 4 * n + sigma + offset + j + 1] = -1
-                cones1.append(cb.NonnegativeConeT(1))
-                if len(amm_directions) > 0:
-                    if amm_directions[i][j+1] == "buy":  #Xj >= 0
-                        A1ij_dir = np.zeros((1, k))
-                        A1ij_dir[0, 4 * n + offset + j + 1] = -1
-                        A1ij = np.vstack([A1ij, A1ij_dir])
-                        cones1.append(cb.NonnegativeConeT(1))
-                    elif amm_directions[i][j+1] == "sell":  #Xj <= 0
-                        A1ij_dir = np.zeros((1, k))
-                        A1ij_dir[0, 4 * n + offset + j + 1] = 1
-                        A1ij = np.vstack([A1ij, A1ij_dir])
-                        cones1.append(cb.NonnegativeConeT(1))
-            else:
-                A1ij = np.zeros((2, k))
-                A1ij[0, 4 * n + offset + j + 1] = 1
-                A1ij[1, 4 * n + sigma + offset + j + 1] = 1
-                cones1.append(cb.ZeroConeT(2))
-            A1i = np.vstack([A1i, A1ij])
-        A1 = np.vstack([A1, A1i])
-        offset += len(amm.asset_list) + 1
-     */
-
     let mut offset = 0;
 
     for (i, amm) in stablepools.iter().enumerate() {
@@ -1617,7 +1484,7 @@ fn find_solution_unrounded(
         }
         for (j, tkn) in amm.assets.iter().enumerate() {
             let delta_pct = if let Some(delta) = &p.last_amm_deltas {
-                delta[i][j + 1] / p.get_tkn_liquidity(*tkn)
+                delta[i][j + 1] / amm.reserves[j]
             } else {
                 1.0
             };
@@ -1651,28 +1518,16 @@ fn find_solution_unrounded(
 
     //A1_trimmed = A1[:, indices_to_keep]
     let A1_trimmed = A1.select(Axis(1), &indices_to_keep);
-    /*
-    let rows_to_keep: Vec<usize> = (0..2 * n + m)
-        .filter(|&i| indices_to_keep.contains(&(2 * n + i)))
-        .collect();
-    let A1_trimmed = A1
-        .select(Axis(0), &rows_to_keep)
-        .select(Axis(1), &indices_to_keep);
-    let cone1 = NonnegativeConeT(A1_trimmed.shape()[0]);
-     */
     let b1 = Array1::<f64>::zeros(A1_trimmed.shape()[0]);
 
     // intent variables are constrained from above, and from below by 0
     let amm_coefs = Array2::<f64>::zeros((2 * m, k - m));
-    //let d_coefs = Array2::<f64>::eye(m);
     let d_coefs = ndarray::concatenate![
         Axis(0),
         Array2::<FloatType>::eye(m),
         Array2::<FloatType>::eye(m).neg()
     ];
     let A2 = ndarray::concatenate![Axis(1), amm_coefs, d_coefs];
-    //let b2 = Array1::from(p.get_partial_sell_maxs_scaled());
-    //b2 = np.concatenate([np.array(p.get_partial_sell_maxs_scaled()), np.zeros(m)])
     let b2 = ndarray::concatenate![
         Axis(0),
         p.get_partial_sell_maxs_scaled(),
@@ -1692,18 +1547,6 @@ fn find_solution_unrounded(
     for i in 0..n {
         let tkn = p.omnipool_asset_ids[i];
         let approx = p.get_omnipool_approx(tkn);
-        /*
-        let approx =
-            if approx == AmmApprox::None && epsilon_tkn[&tkn] <= 1e-6 && tkn != p.tkn_profit {
-                AmmApprox::Linear
-            } else if approx == AmmApprox::None && epsilon_tkn[&tkn] <= 1e-3 {
-                AmmApprox::Quadratic
-            } else {
-                approx
-            };
-
-         */
-
         let (A4i, b4i, cone) = match approx {
             AmmApprox::Linear => {
                 if !omnipool_directions.contains_key(&tkn) {
@@ -1743,7 +1586,6 @@ fn find_solution_unrounded(
         };
 
         A4 = ndarray::concatenate![Axis(0), A4, A4i];
-        //b4.append(Axis(0),(&b4i).into());
         b4 = ndarray::concatenate![Axis(0), b4, b4i];
         cones4.push(cone);
     }
@@ -1753,16 +1595,6 @@ fn find_solution_unrounded(
     let (A5_trimmed, b5, cones5) = p.get_stableswap_bounds(indices_to_keep.clone());
 
     let mut A6 = Array2::<f64>::zeros((0, k));
-    /*
-       for i in range(n):
-       A6i = np.zeros((2, k))
-       A6i[0, i] = -1  # lrna_lambda + yi >= 0
-       A6i[0, 2*n+i] = -1  # lrna_lambda + yi >= 0
-       A6i[1, n+i] = -1  # lambda + xi >= 0
-       A6i[1, 3*n+i] = -1  # lambda + xi >= 0
-       A6 = np.vstack([A6, A6i])
-
-    */
     for i in 0..n {
         let mut A6i = Array2::<f64>::zeros((2, k));
         A6i[[0, i]] = -1.0;
@@ -1930,7 +1762,7 @@ fn find_solution_unrounded(
     }
     let x_scaled = p.get_real_x(x_expanded.clone());
     for i in 0..n {
-        let tkn = p.all_asset_ids[i];
+        let tkn = p.omnipool_asset_ids[i];
         new_omnipool_deltas.insert(tkn, x_scaled[n + i]);
     }
     for j in 0..partial_intents_len {
