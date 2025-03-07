@@ -1503,7 +1503,7 @@ fn find_solution_unrounded(
 
     let A4_trimmed = A4.select(Axis(1), &indices_to_keep);
 
-    let (A5_trimmed, b5, cones5) = p.get_stableswap_bounds(indices_to_keep.clone());
+    let (A5_trimmed, b5, cones5) = p.get_stableswap_bounds(Some(&indices_to_keep));
 
     let mut A6 = Array2::<f64>::zeros((0, k));
     for i in 0..n {

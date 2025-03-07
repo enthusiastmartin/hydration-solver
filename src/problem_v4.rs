@@ -7,7 +7,7 @@ use clarabel::solver::{
     ExponentialConeT, NonnegativeConeT, SolverStatus, SupportedConeT, ZeroConeT,
 };
 use float_next_after::NextAfter;
-use ndarray::{s, Array1, Array2, ArrayBase, Axis, Ix1, OwnedRepr};
+use ndarray::{concatenate, s, Array1, Array2, ArrayBase, Axis, Ix1, OwnedRepr};
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Neg;
@@ -590,102 +590,118 @@ impl ICEProblemV4 {
 }
 
 impl ICEProblemV4 {
-    pub(crate) fn get_stableswap_bounds(
+    pub fn get_stableswap_bounds(
         &self,
-        indices_to_keep: Vec<usize>,
-    ) -> (
-        Array2<FloatType>,
-        Array1<FloatType>,
-        Vec<SupportedConeT<FloatType>>,
-    ) {
+        indices_to_keep: Option<&[usize]>,
+    ) -> (Array2<f64>, Array1<f64>, Vec<SupportedConeT<FloatType>>) {
         let n = self.n;
         let sigma = self.sigma_sum;
         let u = self.u;
         let m = self.m;
         let k = 4 * n + 2 * sigma + u + m;
 
-        let mut a5 = Array2::<FloatType>::zeros((0, k));
-        let mut b5 = Array1::<FloatType>::zeros(0);
+        // Initialize A5 and b5
+        let mut A5 = Array2::zeros((0, k));
+        let mut b5 = Array1::from_vec(vec![]);
         let mut cones5 = Vec::new();
 
-        let c = self.get_c();
-        let b = self.get_b();
+        let C = self.get_c();
+        let B = self.get_b();
         let share_indices = self.share_indices.clone();
 
-        //TODO: this causes panic with numerical error
-        /*
         for (j, amm) in self.amm_store.stablepools.iter().enumerate() {
+            // Check if amm is StableSwapPoolState (in Rust, enforced by type)
             let l = share_indices[j];
             let ann = amm.ann();
             let s0 = amm.shares;
-            let d0 = amm.d;
+            let D0 = amm.d;
             let n_amm = amm.assets.len();
-            let sum_assets = amm.reserve_sum();
-            let denom = sum_assets - d0 * (1. - 1. / ann);
+            let sum_assets: f64 = amm.reserve_sum();
             let approx = self.get_amm_approx(j);
+            let D0_prime = D0 * (1.0 - 1.0 / ann);
+            let denom = sum_assets - D0_prime;
 
-            let mut a5j = Array2::<FloatType>::zeros((0, k));
-            let mut b5j = Array1::<FloatType>::zeros(0);
-
-            if approx[0] == AmmApprox::Linear {
-                a5j = Array2::<FloatType>::zeros((1, k));
-                a5j[[0, 4 * n + 2 * sigma + l]] = 1.;
-                a5j[[0, 4 * n + l]] = (1. + d0 / denom) * c[l] / s0;
+            // Shares constraint
+            let (mut A5j, mut b5j, cone5j) = if approx[0] == AmmApprox::Linear {
+                let mut A5j = Array2::zeros((1, k));
+                A5j[[0, 4 * n + 2 * sigma + l]] = 1.0; // a_{j,0}
+                A5j[[0, 4 * n + l]] = (1.0 + D0_prime / denom) * C[l] / s0; // delta_s
                 for t in 1..=n_amm {
-                    a5j[[0, 4 * n + l + t]] = -b[l + t] / denom;
+                    A5j[[0, 4 * n + l + t]] = -B[l + t] / denom; // delta_x_i
                 }
-                b5j = Array1::<FloatType>::zeros(1);
-                cones5.push(ZeroConeT(1));
+                let b5j = Array1::from_vec(vec![0.0]);
+                (A5j, b5j, ZeroConeT(1))
             } else {
-                a5j = Array2::<FloatType>::zeros((3, k));
-                a5j[[0, 4 * n + 2 * sigma + l]] = -1.;
-                a5j[[1, 4 * n + l]] = -c[l] / s0;
-                a5j[[1, 4 * n + l]] = 1.;
-                a5j[[2, 4 * n + l]] = d0 * c[l] / denom / s0;
+                let mut A5j = Array2::zeros((3, k));
+                let mut b5j = Array1::zeros(3);
+                // x = a_{j,0}
+                A5j[[0, 4 * n + 2 * sigma + l]] = -1.0;
+                // y = 1 + C_jS_j / s_0
+                A5j[[1, 4 * n + l]] = -C[l] / s0;
+                b5j[1] = 1.0;
+                // z = An^n / D_0 sum(x_i^0 + B_i X_i) + (1 - An^n)(1 + C_jS_j / s_0)
+                A5j[[2, 4 * n + l]] = D0_prime * C[l] / denom / s0;
                 for t in 1..=n_amm {
-                    a5j[[2, 4 * n + l + t]] = -b[l + t] / denom;
+                    A5j[[2, 4 * n + l + t]] = -B[l + t] / denom;
                 }
-                b5j = Array1::<FloatType>::zeros(3);
-                cones5.push(ExponentialConeT());
-            }
+                b5j[2] = 1.0;
+                (A5j, b5j, ExponentialConeT())
+            };
+            cones5.push(cone5j);
+
+            // Asset constraints
             for t in 1..=n_amm {
                 let x0 = amm.reserves[t - 1];
-                if approx[t] == AmmApprox::Linear {
-                    let mut a5jt = Array2::<FloatType>::zeros((1, k));
-                    a5jt[[0, 4 * n + 2 * sigma + l + t]] = 1.;
-                    a5jt[[0, 4 * n + l]] = c[l] / s0;
-                    a5jt[[0, 4 * n + l + t]] = -b[l + t] / x0;
-                    let b5jt = Array1::<FloatType>::zeros(1);
-                    cones5.push(ZeroConeT(1));
-                    a5j = ndarray::concatenate![Axis(0), a5j, a5jt];
-                    //b5j = b5j.append(Axis(0), (&b5jt).into()).unwrap();
-                    b5j = ndarray::concatenate![Axis(0), b5j, b5jt];
+                let (A5jt, b5jt, cone5jt) = if approx[t] == AmmApprox::Linear {
+                    let mut A5jt = Array2::zeros((1, k));
+                    A5jt[[0, 4 * n + 2 * sigma + l + t]] = 1.0; // a_{j,t}
+                    A5jt[[0, 4 * n + l]] = C[l] / s0; // delta_s
+                    A5jt[[0, 4 * n + l + t]] = -B[l + t] / x0; // delta_x_i
+                    let b5jt = Array1::from_vec(vec![0.0]);
+                    (A5jt, b5jt, ZeroConeT(1))
                 } else {
-                    let mut a5jt = Array2::<FloatType>::zeros((3, k));
-                    a5jt[[0, 4 * n + 2 * sigma + l + t]] = -1.;
-                    a5jt[[1, 4 * n + l]] = -c[l] / s0;
-                    a5jt[[1, 4 * n + l]] = 1.;
-                    a5jt[[2, 4 * n + l + t]] = -b[l + t] / x0;
-                    let b5jt = Array1::<FloatType>::zeros(3);
-                    cones5.push(ExponentialConeT());
-                    a5j = ndarray::concatenate![Axis(0), a5j, a5jt];
-                    b5j = ndarray::concatenate![Axis(0), b5j, b5jt];
-                    //b5j = b5j.append(Axis(0), &b5jt).unwrap();
-                }
+                    let mut A5jt = Array2::zeros((3, k));
+                    let mut b5jt = Array1::zeros(3);
+                    // x = a_{j,t}
+                    A5jt[[0, 4 * n + 2 * sigma + l + t]] = -1.0;
+                    // y = 1 + C_jS_j / s_0
+                    A5jt[[1, 4 * n + l]] = -C[l] / s0;
+                    b5jt[1] = 1.0;
+                    // z = (x_t^0 + B_t X_t) / D_0
+                    A5jt[[2, 4 * n + l + t]] = -B[l + t] / x0;
+                    b5jt[2] = 1.0;
+                    (A5jt, b5jt, ExponentialConeT())
+                };
+                cones5.push(cone5jt);
+                A5j =
+                    concatenate(Axis(0), &[A5j.view(), A5jt.view()]).expect("Failed to stack A5j");
+                b5j =
+                    concatenate(Axis(0), &[b5j.view(), b5jt.view()]).expect("Failed to concat b5j");
             }
-            let mut a5j_final = Array2::<FloatType>::zeros((1, k));
+
+            // Final constraint
+            let mut A5j_final = Array2::zeros((1, k));
             for t in 0..=n_amm {
-                a5j_final[[0, 4 * n + 2 * sigma + l + t]] = -1.;
+                A5j_final[[0, 4 * n + 2 * sigma + l + t]] = -1.0;
             }
-            let b5j_final = Array1::<FloatType>::zeros(1);
+            let b5j_final = Array1::from_vec(vec![0.0]);
             cones5.push(NonnegativeConeT(1));
-            a5 = ndarray::concatenate![Axis(0), a5, a5j, a5j_final];
-            b5 = ndarray::concatenate![Axis(0), b5, b5j, b5j_final];
-            //b5 = b5.append(&b5j);
+
+            // Stack all parts
+            A5 = concatenate(Axis(0), &[A5.view(), A5j.view(), A5j_final.view()])
+                .expect("Failed to stack A5");
+            b5 = concatenate(Axis(0), &[b5.view(), b5j.view(), b5j_final.view()])
+                .expect("Failed to concat b5");
         }
 
-         */
-        (a5.select(Axis(1), &indices_to_keep), b5, cones5)
+        // Apply indices_to_keep if provided
+        let A5_final = if let Some(indices) = indices_to_keep {
+            A5.select(Axis(1), indices)
+        } else {
+            A5
+        };
+
+        (A5_final, b5, cones5)
     }
 }
 
