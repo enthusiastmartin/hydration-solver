@@ -558,14 +558,17 @@ impl ICEProblemV4 {
         let i_coefs = profit_a.slice(s![.., k..]);
         let mut i_coefs = i_coefs.neg();
         if allow_loss {
-            //TODO: remove axis somehow
             let profit_i = self
                 .all_asset_ids
                 .iter()
                 .position(|&x| x == self.tkn_profit)
                 .unwrap();
-            //a3 = a3.remove_axis(Axis(profit_i));
-            //i_coefs = i_coefs.remove_axis(Axis(0));
+            let idx = profit_i + 1;
+            let m = a3.nrows();
+            assert!(idx < m, "Index out of bounds");
+            let indices: Vec<_> = (0..m).filter(|&i| i != idx).collect();
+            a3 = a3.select(Axis(0), &indices);
+            i_coefs = i_coefs.select(Axis(0), &indices);
         }
         let a3_trimmed = if let Some(indices) = indices_to_keep {
             //a3.slice(s![.., indices]).to_owned()
