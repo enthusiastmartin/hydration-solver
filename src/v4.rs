@@ -455,7 +455,6 @@ fn solve_inclusion_problem(
     let k = 4 * n + 3 * sigma + m + r;
 
     let scaling = p.get_scaling();
-    //let x_list = x_real_list.map(|x| x.map_axis(Axis(1), |row| p.get_scaled_x(row.to_vec()))).unwrap();
 
     let scaled_rows: Vec<Vec<f64>> = x_real_list
         .clone()
@@ -469,21 +468,6 @@ fn solve_inclusion_problem(
 
     let x_list = Array2::from_shape_vec((lk, lm), scaled_rows.into_iter().flatten().collect())
         .expect("Failed to create x_list from scaled rows");
-
-    /*
-    let lk = scaled_rows.len();
-    let lm = x_real_list.clone().unwrap().nrows();
-
-    let mut x_list = Array2::zeros((lm, lk));
-    for (i, row) in x_real_list.clone().unwrap().outer_iter().enumerate() {
-        let scaled = p.get_scaled_x(row.to_vec());
-        assert_eq!(scaled.len(), k, "Inconsistent length from get_scaled_x at row {}", i);
-        for (j, &val) in scaled.iter().enumerate() {
-            x_list[[i, j]] = val;
-        }
-    }
-
-     */
 
     let inf = f64::INFINITY;
 
@@ -591,56 +575,6 @@ fn solve_inclusion_problem(
             .iter()
             .map(|tkn| max_lambda_d.get(tkn).unwrap().clone()),
     );
-
-    /*
-
-    let (
-        mut min_y,
-        mut max_y,
-        mut min_x,
-        mut max_x,
-        mut min_lrna_lambda,
-        mut max_lrna_lambda,
-        mut min_lambda,
-        mut max_lambda,
-    ) = p.get_scaled_bounds();
-    let profit_i = asset_list
-        .iter()
-        .position(|tkn| tkn == &p.tkn_profit)
-        .unwrap();
-    max_x[profit_i] = inf;
-    max_y[profit_i] = inf;
-    min_lambda[profit_i] = 0.0;
-    min_lrna_lambda[profit_i] = 0.0;
-
-    min_y = min_y.clone() - 1.1 * min_y.abs();
-    min_x = min_x.clone() - 1.1 * min_x.abs();
-    min_lrna_lambda = min_lrna_lambda.clone() - 1.1 * min_lrna_lambda.abs();
-    min_lambda = min_lambda.clone() - 1.1 * min_lambda.abs();
-    max_y = max_y.clone() + 1.1 * max_y.abs();
-    max_x = max_x.clone() + 1.1 * max_x.abs();
-    max_lrna_lambda = max_lrna_lambda.clone() + 1.1 * max_lrna_lambda.abs();
-    max_lambda = max_lambda.clone() + 1.1 * max_lambda.abs();
-
-     */
-
-    /*
-    max_L = np.array([])
-    for amm in p.amm_list:
-        max_L = np.append(max_L, amm.shares)
-        for tkn in amm.asset_list:
-            max_L = np.append(max_L, amm.liquidity[tkn])
-
-    B = p.get_B()
-    C = p.get_C()
-    max_L = max_L / (B + C)
-
-    min_L = np.zeros(sigma)
-    min_X = [-x for x in max_L]
-    max_X = [inf] * sigma
-    min_a = [-inf] * sigma
-    max_a = [inf] * sigma
-     */
 
     let mut max_L_vec = Vec::new();
     for amm in &p.amm_store.stablepools {
@@ -793,25 +727,6 @@ fn solve_inclusion_problem(
         }
     }
 
-    /*
-    S_lower = np.array([-inf]*len(S_upper))
-
-    # need top level Stableswap constraint
-    A_amm = np.zeros((p.s, k))
-    offset = 0
-    for i, amm in enumerate(p.amm_list):
-        for j in range(1 + len(amm.asset_list)):
-            A_amm[i, 4*n + 2*sigma + offset + j] = 1
-        offset += 1 + len(amm.asset_list)
-    A_amm_upper = np.array([inf]*p.s)
-    A_amm_lower = np.zeros(p.s)
-
-    # asset leftover must be above zero
-    A3 = p.get_profit_A()
-    A3_upper = np.array([inf]*(N+1))
-    A3_lower = np.zeros(N+1)
-     */
-
     let S_lower = Array1::<f64>::from_elem(S_upper.len(), -inf);
 
     let mut A_amm = Array2::<f64>::zeros((p.s, k));
@@ -839,27 +754,6 @@ fn solve_inclusion_problem(
     let A5_upper = Array1::<f64>::from_elem(2 * n, inf);
     let A5_lower = Array1::<f64>::zeros(2 * n);
 
-    /*
-    # inequality constraints: X_j + L_j >= 0
-    A7 = np.zeros((sigma, k))
-    for i in range(sigma):
-        A7[i, 4*n + i] = 1
-        A7[i, 4*n + sigma + i] = 1
-    A7_upper = np.array([inf] * sigma)
-    A7_lower = np.zeros(sigma)
-    # A7 = np.zeros((0,k))
-    # A7_upper = np.array([])
-    # A7_lower = np.array([])
-
-    # optimized value must be lower than best we have so far, higher than lower bound
-    A8 = np.zeros((1, k))
-    q = p.get_q()
-    A8[0, :] = -q
-    A8_upper = np.array([upper_bound / scaling[p.tkn_profit]])
-    A8_upper = np.array([upper_bound/10 / scaling[p.tkn_profit]])
-    A8_lower = np.array([lower_bound / scaling[p.tkn_profit]])
-     */
-
     let mut A7 = Array2::<f64>::zeros((sigma, k));
     for i in 0..sigma {
         A7[[i, 4 * n + i]] = 1.0;
@@ -874,23 +768,6 @@ fn solve_inclusion_problem(
     A8.row_mut(0).assign(&(-q_a));
     let A8_upper = Array1::from_elem(1, upper_bound / 10. / scaling[&p.tkn_profit]);
     let A8_lower = Array1::from_elem(1, lower_bound / scaling[&p.tkn_profit]);
-
-    /*
-        if old_A is None:
-        old_A = np.zeros((0, k))
-    if old_A_upper is None:
-        old_A_upper = np.array([])
-    if old_A_lower is None:
-        old_A_lower = np.array([])
-    assert len(old_A_upper) == len(old_A_lower) == old_A.shape[0]
-    A = np.vstack([old_A, S, A_amm, A3, A5, A7, A8])
-    A_upper = np.concatenate([old_A_upper, S_upper, A_amm_upper, A3_upper, A5_upper, A7_upper, A8_upper])
-    A_lower = np.concatenate([old_A_lower, S_lower, A_amm_lower, A3_lower, A5_lower, A7_lower, A8_lower])
-     */
-
-    //let old_A = old_A.unwrap_or_else(|| Array2::<f64>::zeros((0, k)));
-    //let old_A_upper = old_A_upper.unwrap_or_else(|| Array1::<f64>::zeros(0));
-    //let old_A_lower = old_A_lower.unwrap_or_else(|| Array1::<f64>::zeros(0));
 
     let old_A = old_A.unwrap_or_else(|| Array2::zeros((0, k)));
     let old_A_upper = old_A_upper.unwrap_or_else(|| Array1::from_vec(vec![]));
@@ -926,17 +803,6 @@ fn solve_inclusion_problem(
         A7_lower.view(),
         A8_lower.view()
     ];
-
-    /*
-    nonzeros = []
-    start = [0]
-    a = []
-    for i in range(A.shape[0]):
-        row_nonzeros = np.where(A[i, :] != 0)[0]
-        nonzeros.extend(row_nonzeros)
-        start.append(len(nonzeros))
-        a.extend(A[i, row_nonzeros])
-     */
 
     let mut nonzeros = vec![];
     let mut start = vec![0];
@@ -1063,20 +929,6 @@ fn solve_inclusion_problem(
         value_valid,
         new_amm_deltas,
     )
-
-    /*
-    (
-        new_amm_deltas,
-        exec_partial_intent_deltas,
-        exec_full_intent_flags,
-        save_A,
-        save_A_upper,
-        save_A_lower,
-        -q.clone().dot(&x_expanded) * scaling[&p.tkn_profit],
-        value_valid,
-    )
-
-         */
 }
 
 fn find_good_solution(
