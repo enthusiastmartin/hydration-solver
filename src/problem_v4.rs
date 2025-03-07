@@ -576,9 +576,8 @@ impl ICEProblemV4 {
         let b3 = if self.r == 0 {
             Array1::zeros(a3_trimmed.shape()[0])
         } else {
-            // TODO: correct?
-            let inidicators = self.get_indicators().unwrap();
-            let i_array = Array1::from_iter(inidicators.iter().map(|&x| x as f64));
+            let indicators = self.get_indicators().unwrap();
+            let i_array = Array1::from_iter(indicators.iter().map(|&x| x as f64));
             i_coefs.dot(&i_array).neg()
         };
         (a3_trimmed, b3)
@@ -1185,7 +1184,7 @@ impl StepParams {
                 let scalar_profit = scaling[&tkn] * problem.price(tkn, problem.tkn_profit);
                 scaling.insert(
                     problem.tkn_profit,
-                    scaling[&problem.tkn_profit].max(scalar_profit / 10_000f64), // TODO: WHY / 10000?
+                    scaling[&problem.tkn_profit].max(scalar_profit / 10_000f64),
                 );
             }
         }

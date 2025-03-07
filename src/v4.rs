@@ -266,7 +266,6 @@ impl SolverV4 {
 
             if status != ProblemStatus::PrimalInfeasible && status != ProblemStatus::DualInfeasible
             {
-                //TODO: verify if this is correct
                 let x2 = Array2::from_shape_vec((1, 4 * n + 3 * sigma + m), x).unwrap();
                 x_list = ndarray::concatenate![Axis(0), x_list, x2];
             }
@@ -1161,7 +1160,6 @@ fn find_good_solution(
             (None, 0)
         };
 
-        //TODO: set up problem here !!! Part 2
         let mut params = if let Some(nm) = new_maxes {
             SetupParams::new().with_sell_maxes(nm)
         } else {
@@ -1878,7 +1876,6 @@ fn find_solution_unrounded(
     };
     let A = CscMatrix::vcat(&A, &A3_trimmed);
     let A = CscMatrix::vcat(&A, &A4_trimmed);
-    //TODO: in some cases it results in A5 with shape 0,0 - so can we just excklude it ?
     let A = if A5_trimmed.n != 0 {
         CscMatrix::vcat(&A, &A5_trimmed)
     } else {
