@@ -1913,6 +1913,7 @@ fn find_solution_unrounded(
     cones.push(cone2);
     cones.push(cone3);
     cones.extend(cones4.into_iter());
+    cones.extend(cones5.into_iter());
     cones.push(cone6);
     cones.push(cone7);
 
