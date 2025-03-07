@@ -1166,18 +1166,22 @@ fn find_good_solution(
         };
 
         //TODO: set up problem here !!! Part 2
-        /*
-        p.set_up_problem(
+        let mut params = if let Some(nm) = new_maxes {
+            SetupParams::new().with_sell_maxes(nm)
+        } else {
             SetupParams::new()
-                .with_sell_maxes(new_maxes)
-                .with_clear_indicators(false)
-                .with_force_omnipool_approx(force_omnipool_approx.clone())
-                .with_force_amm_approx_vec(force_amm_approx.clone())
-                .with_omnipool_deltas(omnipool_deltas.clone())
-                .with_amm_deltas(amm_deltas.clone()),
-        );
+        };
+        let params = params
+            .with_clear_indicators(false)
+            .with_force_omnipool_approx(force_omnipool_approx.clone())
+            .with_force_amm_approx_vec(force_amm_approx.clone());
+        p.set_up_problem(params);
 
-         */
+        // set deltas
+        p.last_omnipool_deltas = Some(omnipool_deltas.clone());
+        p.last_amm_deltas = Some(amm_deltas.clone());
+
+        println!("------------");
 
         let (omnipool_deltas, intent_deltas, x, obj, dual_obj, status, amm_deltas) =
             find_solution_unrounded(&p, allow_loss);
@@ -1477,9 +1481,15 @@ fn find_solution_unrounded(
 
     for i in 0..n {
         let tkn = p.omnipool_asset_ids[i];
-        let delta_pct = if let Some(delta) = p.last_omnipool_deltas.as_ref().unwrap().get(&tkn) {
-            if omnipool_directions.contains_key(&tkn) {
-                delta / p.get_tkn_liquidity(tkn)
+        dbg!(&p.last_omnipool_deltas);
+
+        let delta_pct = if let Some(delta) = p.last_omnipool_deltas.as_ref() {
+            if let Some(d) = delta.get(&tkn) {
+                if omnipool_directions.contains_key(&tkn) {
+                    *d / p.get_tkn_liquidity(tkn)
+                } else {
+                    1.0
+                }
             } else {
                 1.0
             }
@@ -1578,6 +1588,9 @@ fn find_solution_unrounded(
      */
 
     let mut offset = 0;
+
+    dbg!(&amm_directions);
+
     for (i, amm) in stablepools.iter().enumerate() {
         let delta_pct = if let Some(delta) = &p.last_amm_deltas {
             delta[i][0] / amm.shares
@@ -1589,17 +1602,19 @@ fn find_solution_unrounded(
             A1i = Array2::<f64>::zeros((1, k));
             A1i[[0, 4 * n + sigma + offset]] = -1.0;
             cones1.push(NonnegativeConeT(1));
-            let directions = amm_directions[i].clone();
-            if directions[0] == Direction::Buy {
-                let mut A1i_dir = Array2::<f64>::zeros((1, k));
-                A1i_dir[[0, 4 * n + offset]] = -1.0;
-                A1i = ndarray::concatenate![Axis(0), A1i, A1i_dir];
-                cones1.push(NonnegativeConeT(1));
-            } else if directions[0] == Direction::Sell {
-                let mut A1i_dir = Array2::<f64>::zeros((1, k));
-                A1i_dir[[0, 4 * n + offset]] = 1.0;
-                A1i = ndarray::concatenate![Axis(0), A1i, A1i_dir];
-                cones1.push(NonnegativeConeT(1));
+            if amm_directions.len() > 0 {
+                let directions = amm_directions[i].clone();
+                if directions[0] == Direction::Buy {
+                    let mut A1i_dir = Array2::<f64>::zeros((1, k));
+                    A1i_dir[[0, 4 * n + offset]] = -1.0;
+                    A1i = ndarray::concatenate![Axis(0), A1i, A1i_dir];
+                    cones1.push(NonnegativeConeT(1));
+                } else if directions[0] == Direction::Sell {
+                    let mut A1i_dir = Array2::<f64>::zeros((1, k));
+                    A1i_dir[[0, 4 * n + offset]] = 1.0;
+                    A1i = ndarray::concatenate![Axis(0), A1i, A1i_dir];
+                    cones1.push(NonnegativeConeT(1));
+                }
             }
         } else {
             A1i = Array2::<f64>::zeros((2, k));
@@ -1681,8 +1696,10 @@ fn find_solution_unrounded(
     let mut cones4 = vec![];
     let epsilon_tkn = p.get_epsilon_tkn();
 
+    dbg!(&epsilon_tkn);
+
     for i in 0..n {
-        let tkn = trading_asset_ids[i];
+        let tkn = p.omnipool_asset_ids[i];
         let approx = p.get_omnipool_approx(tkn);
         /*
         let approx =

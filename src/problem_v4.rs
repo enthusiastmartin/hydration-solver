@@ -303,7 +303,7 @@ impl ICEProblemV4 {
 
     pub(crate) fn get_epsilon_tkn(&self) -> BTreeMap<AssetId, FloatType> {
         let mut r = BTreeMap::new();
-        for asset_id in self.trading_asset_ids.iter() {
+        for asset_id in self.omnipool_asset_ids.iter() {
             let max_in = self.get_max_in()[&asset_id];
             let max_out = self.get_max_out()[&asset_id];
             let liquidity = self.get_asset_pool_data(*asset_id).reserve;
@@ -574,9 +574,10 @@ impl ICEProblemV4 {
         let b3 = if self.r == 0 {
             Array1::zeros(a3_trimmed.shape()[0])
         } else {
-            // TODO: how ?
-            //-i_coefs.dot(&self.get_indicators().unwrap())
-            panic!("not sure how to do this yet")
+            // TODO: correct?
+            let inidicators = self.get_indicators().unwrap();
+            let i_array = Array1::from_iter(inidicators.iter().map(|&x| x as f64));
+            i_coefs.dot(&i_array).neg()
         };
         (a3_trimmed, b3)
     }
@@ -1146,54 +1147,7 @@ impl StepParams {
         self.min_in = Some(min_in);
         self.min_out = Some(min_out);
     }
-    fn set_bounds(&mut self, problem: &ICEProblemV4) {
-        let n = problem.trading_asset_ids.len();
-        let mut min_x = vec![0.0; n];
-        let mut max_x = vec![0.0; n];
-        let mut min_lambda = vec![0.0; n];
-        let mut max_lambda = vec![0.0; n];
-        let mut min_y = vec![0.0; n];
-        let mut max_y = vec![0.0; n];
-        let mut min_lrna_lambda = vec![0.0; n];
-        let mut max_lrna_lambda = vec![0.0; n];
 
-        for (i, &tkn) in problem.trading_asset_ids.iter().enumerate() {
-            min_x[i] = self.min_in.as_ref().unwrap()[&tkn] - self.max_out.as_ref().unwrap()[&tkn];
-            max_x[i] = self.max_in.as_ref().unwrap()[&tkn] - self.min_out.as_ref().unwrap()[&tkn];
-            min_lambda[i] = (-max_x[i]).max(0.0);
-            max_lambda[i] = (-min_x[i]).max(0.0);
-
-            let omnipool_data = problem.get_asset_pool_data(tkn);
-            let min_y_val =
-                -omnipool_data.hub_reserve * max_x[i] / (max_x[i] + omnipool_data.reserve);
-            min_y[i] = min_y_val - 0.1 * min_y_val.abs();
-            let max_y_val =
-                -omnipool_data.hub_reserve * min_x[i] / (min_x[i] + omnipool_data.reserve);
-            max_y[i] = max_y_val + 0.1 * max_y_val.abs();
-            min_lrna_lambda[i] = (-max_y[i]).max(0.0);
-            max_lrna_lambda[i] = (-min_y[i]).max(0.0);
-        }
-
-        let profit_i = problem
-            .trading_asset_ids
-            .iter()
-            .position(|&tkn| tkn == problem.tkn_profit)
-            .unwrap();
-        let profit_tkn_data = problem.get_asset_pool_data(problem.tkn_profit);
-        min_x[profit_i] = -profit_tkn_data.reserve;
-        max_lambda[profit_i] = (-min_x[profit_i]).max(0.0);
-        min_y[profit_i] = -profit_tkn_data.hub_reserve;
-        max_lrna_lambda[profit_i] = (-min_y[profit_i]).max(0.0);
-
-        self.min_x = Some(min_x);
-        self.max_x = Some(max_x);
-        self.min_lambda = Some(min_lambda);
-        self.max_lambda = Some(max_lambda);
-        self.min_y = Some(min_y);
-        self.max_y = Some(max_y);
-        self.min_lrna_lambda = Some(min_lrna_lambda);
-        self.max_lrna_lambda = Some(max_lrna_lambda);
-    }
     fn set_scaling(&mut self, problem: &ICEProblemV4) {
         let mut scaling: BTreeMap<AssetId, FloatType> = BTreeMap::new();
 
@@ -1265,7 +1219,7 @@ impl StepParams {
         let mut amm_asset_coefs: BTreeMap<AssetId, FloatType> = BTreeMap::new();
 
         let scaling = self.scaling.as_ref().unwrap();
-        for &tkn in problem.trading_asset_ids.iter() {
+        for &tkn in problem.omnipool_asset_ids.iter() {
             let omnipool_data = problem.get_asset_pool_data(tkn);
             amm_lrna_coefs.insert(tkn, scaling[&1u32.into()] / omnipool_data.hub_reserve); // Assuming 1u32 represents 'LRNA'
             amm_asset_coefs.insert(tkn, scaling[&tkn] / omnipool_data.reserve);
@@ -1279,7 +1233,7 @@ impl StepParams {
 impl StepParams {
     pub fn set_directions(&mut self, problem: &ICEProblemV4) {
         let mut omnipool_directions = BTreeMap::new();
-        let mut amm_directions = vec![vec![]];
+        let mut amm_directions = vec![];
         /*
                 for tkn in self._omnipool_directional_flags:
             if self._omnipool_directional_flags[tkn] == -1:
@@ -1340,119 +1294,6 @@ impl StepParams {
 
         self.omnipool_directions = Some(omnipool_directions);
         self.amm_directions = Some(amm_directions);
-    }
-    #[deprecated]
-    pub fn set_omnipool_directions(&mut self, problem: &ICEProblemV4) {
-        let mut known_intent_directions = BTreeMap::new();
-        known_intent_directions.insert(problem.tkn_profit, Direction::Both);
-
-        for (j, &idx) in problem.partial_indices.iter().enumerate() {
-            let intent = &problem.intents[idx];
-            if problem.partial_sell_maxs[j] > 0.0 {
-                let tkn_sell = intent.asset_in;
-                let tkn_buy = intent.asset_out;
-
-                match known_intent_directions.entry(tkn_sell) {
-                    Entry::Vacant(e) => {
-                        e.insert(Direction::Sell);
-                    }
-                    Entry::Occupied(mut e) => {
-                        if *e.get() == Direction::Buy {
-                            e.insert(Direction::Both);
-                        }
-                    }
-                }
-
-                match known_intent_directions.entry(tkn_buy) {
-                    Entry::Vacant(e) => {
-                        e.insert(Direction::Buy);
-                    }
-                    Entry::Occupied(mut e) => {
-                        if *e.get() == Direction::Sell {
-                            e.insert(Direction::Both);
-                        }
-                    }
-                }
-            }
-        }
-
-        for &tkn in problem.trading_asset_ids.iter() {
-            let known_flow = self.known_flow.as_ref().unwrap();
-            let flow_in = known_flow[&tkn].0;
-            let flow_out = known_flow[&tkn].1;
-
-            if flow_in > flow_out {
-                match known_intent_directions.entry(tkn) {
-                    Entry::Vacant(e) => {
-                        e.insert(Direction::Sell);
-                    }
-                    Entry::Occupied(mut e) => {
-                        if *e.get() == Direction::Buy {
-                            e.insert(Direction::Both);
-                        }
-                    }
-                }
-            } else if flow_in < flow_out {
-                match known_intent_directions.entry(tkn) {
-                    Entry::Vacant(e) => {
-                        e.insert(Direction::Buy);
-                    }
-                    Entry::Occupied(mut e) => {
-                        if *e.get() == Direction::Sell {
-                            e.insert(Direction::Both);
-                        }
-                    }
-                }
-            } else if flow_in > 0.0 {
-                match known_intent_directions.entry(tkn) {
-                    Entry::Vacant(e) => {
-                        e.insert(Direction::Buy);
-                    }
-                    Entry::Occupied(mut e) => {
-                        if *e.get() == Direction::Sell {
-                            e.insert(Direction::Both);
-                        }
-                    }
-                }
-            }
-        }
-
-        let mut omnipool_directions = BTreeMap::new();
-        let directions = if let Some(d) = problem.omnipool_directional_flags.as_ref() {
-            d.clone()
-        } else {
-            BTreeMap::new()
-        };
-        for &tkn in problem.trading_asset_ids.iter() {
-            if let Some(&flag) = directions.get(&tkn) {
-                match flag {
-                    -1 => {
-                        omnipool_directions.insert(tkn, Direction::Sell);
-                    }
-                    1 => {
-                        omnipool_directions.insert(tkn, Direction::Buy);
-                    }
-                    0 => {
-                        omnipool_directions.insert(tkn, Direction::Neither);
-                    }
-                    _ => {}
-                }
-            } else if let Some(&direction) = known_intent_directions.get(&tkn) {
-                match direction {
-                    Direction::Sell => {
-                        omnipool_directions.insert(tkn, Direction::Buy);
-                    }
-                    Direction::Buy => {
-                        omnipool_directions.insert(tkn, Direction::Sell);
-                    }
-                    _ => {}
-                }
-            } else {
-                omnipool_directions.insert(tkn, Direction::Neither);
-            }
-        }
-
-        self.omnipool_directions = Some(omnipool_directions);
     }
 }
 
