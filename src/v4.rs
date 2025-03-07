@@ -203,10 +203,6 @@ impl SolverV4 {
 
         let (n, m, r, sigma) = (problem.n, problem.m, problem.r, problem.sigma_sum);
 
-        dbg!(n, m, r, sigma);
-
-        //dbg!(problem.indicators);
-
         let inf = FLOAT_INF;
 
         let k_milp = 4 * n + 3 * sigma + m + r;
@@ -1181,8 +1177,6 @@ fn find_good_solution(
         p.last_omnipool_deltas = Some(omnipool_deltas.clone());
         p.last_amm_deltas = Some(amm_deltas.clone());
 
-        println!("------------");
-
         let (omnipool_deltas, intent_deltas, x, obj, dual_obj, status, amm_deltas) =
             find_solution_unrounded(&p, allow_loss);
 
@@ -1481,8 +1475,6 @@ fn find_solution_unrounded(
 
     for i in 0..n {
         let tkn = p.omnipool_asset_ids[i];
-        dbg!(&p.last_omnipool_deltas);
-
         let delta_pct = if let Some(delta) = p.last_omnipool_deltas.as_ref() {
             if let Some(d) = delta.get(&tkn) {
                 if omnipool_directions.contains_key(&tkn) {
@@ -1589,8 +1581,6 @@ fn find_solution_unrounded(
 
     let mut offset = 0;
 
-    dbg!(&amm_directions);
-
     for (i, amm) in stablepools.iter().enumerate() {
         let delta_pct = if let Some(delta) = &p.last_amm_deltas {
             delta[i][0] / amm.shares
@@ -1695,8 +1685,6 @@ fn find_solution_unrounded(
     let mut b4 = Array1::<f64>::zeros(0);
     let mut cones4 = vec![];
     let epsilon_tkn = p.get_epsilon_tkn();
-
-    dbg!(&epsilon_tkn);
 
     for i in 0..n {
         let tkn = p.omnipool_asset_ids[i];

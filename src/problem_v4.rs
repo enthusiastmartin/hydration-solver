@@ -418,8 +418,9 @@ impl ICEProblemV4 {
             .enumerate()
             .map(|(i, &tkn)| x[3 * n + i] * scaling[&tkn])
             .collect();
-        let _s = Array2::from_shape_vec((N, sigma), self.get_s().clone()).unwrap(); // TODO: is this ok ?!
-        let x_scaling = (self.rho.clone() + self.psi.clone()).t().dot(&_s);
+
+        let S_array = Array1::from_vec(self.get_s().clone());
+        let x_scaling = (&self.rho + &self.psi).t().dot(&S_array);
         let mut scaled_x: Vec<FloatType> = x[4 * n..4 * n + sigma]
             .iter()
             .zip(x_scaling.iter())
@@ -492,8 +493,9 @@ impl ICEProblemV4 {
             .enumerate()
             .map(|(i, &tkn)| x[3 * n + i] / scaling[&tkn])
             .collect();
-        let _s = Array2::from_shape_vec((self.asset_count, sigma), self.get_s().clone()).unwrap(); // TODO: is this ok ?!
-        let stableswap_scalars = (self.rho.clone() + self.psi.clone()).t().dot(&_s);
+
+        let S_array = Array1::from_vec(self.get_s().clone());
+        let stableswap_scalars = (&self.rho + &self.psi).t().dot(&S_array);
         let scaled_X: Vec<FloatType> = x[4 * n..4 * n + sigma]
             .iter()
             .zip(stableswap_scalars.iter())
