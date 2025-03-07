@@ -1386,7 +1386,7 @@ fn find_solution_unrounded(
      */
 
     let (omnipool_directions, amm_directions) = p.get_directions();
-    let k = 4 * n + 2 * sigma + m;
+    let k = 4 * n + 2 * sigma + m + u;
     let mut indices_to_keep: Vec<usize> = (0..k).collect();
 
     /*
