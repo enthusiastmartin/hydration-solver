@@ -10,7 +10,7 @@ use anyhow::{anyhow, Result};
 use clarabel::algebra::*;
 use clarabel::solver::*;
 use highs::{HighsModelStatus, Sense};
-use ndarray::{s, Array1, Array2, Axis};
+use ndarray::{concatenate, s, Array1, Array2, Axis};
 use std::collections::BTreeMap;
 use std::ops::Neg;
 
@@ -455,7 +455,35 @@ fn solve_inclusion_problem(
     let k = 4 * n + 3 * sigma + m + r;
 
     let scaling = p.get_scaling();
-    let x_list = x_real_list.map(|x| x.map_axis(Axis(1), |row| p.get_scaled_x(row.to_vec())));
+    //let x_list = x_real_list.map(|x| x.map_axis(Axis(1), |row| p.get_scaled_x(row.to_vec()))).unwrap();
+
+    let scaled_rows: Vec<Vec<f64>> = x_real_list
+        .clone()
+        .unwrap()
+        .outer_iter()
+        .map(|row| p.get_scaled_x(row.to_vec()))
+        .collect();
+
+    let lk = scaled_rows.len();
+    let lm = scaled_rows[0].len();
+
+    let x_list = Array2::from_shape_vec((lk, lm), scaled_rows.into_iter().flatten().collect())
+        .expect("Failed to create x_list from scaled rows");
+
+    /*
+    let lk = scaled_rows.len();
+    let lm = x_real_list.clone().unwrap().nrows();
+
+    let mut x_list = Array2::zeros((lm, lk));
+    for (i, row) in x_real_list.clone().unwrap().outer_iter().enumerate() {
+        let scaled = p.get_scaled_x(row.to_vec());
+        assert_eq!(scaled.len(), k, "Inconsistent length from get_scaled_x at row {}", i);
+        for (j, &val) in scaled.iter().enumerate() {
+            x_list[[i, j]] = val;
+        }
+    }
+
+     */
 
     let inf = f64::INFINITY;
 
@@ -485,9 +513,6 @@ fn solve_inclusion_problem(
         max_x_d.insert(tkn.clone(), *max_lambda_d.get(tkn).unwrap());
         min_x_d.insert(tkn.clone(), -max_lambda_d.get(tkn).unwrap());
     }
-
-    let max_in = p.get_max_in();
-    let max_out = p.get_max_out();
 
     for tkn in omnipool_asset_list.iter() {
         if *tkn != p.tkn_profit {
@@ -617,30 +642,24 @@ fn solve_inclusion_problem(
     max_a = [inf] * sigma
      */
 
-    let mut max_L = vec![];
-    for amm in p.amm_store.stablepools.iter() {
-        max_L.push(amm.shares);
-        for reserve in amm.reserves.iter() {
-            max_L.push(*reserve)
+    let mut max_L_vec = Vec::new();
+    for amm in &p.amm_store.stablepools {
+        max_L_vec.push(amm.shares);
+        for (idx, _) in amm.assets.iter().enumerate() {
+            max_L_vec.push(amm.reserves[idx]);
         }
     }
+    let max_L = Array1::from_vec(max_L_vec);
+
     let B = p.get_b();
     let C = p.get_c();
-    let max_L = ndarray::Array1::from_vec(max_L);
     let max_L = max_L / (B.clone() + C.clone());
-    //max_L = max_L.iter().map(|&v| v / (B + C)).collect::<Vec<_>>();
 
     let min_L = Array1::<f64>::zeros(sigma);
     let min_X = Array1::from_iter(max_L.iter().map(|&x| -x));
     let max_X = Array1::<f64>::from_elem(sigma, inf);
     let min_a = Array1::<f64>::from_elem(sigma, -inf);
     let max_a = Array1::<f64>::from_elem(sigma, inf);
-
-    /*
-     lower = np.concatenate([min_y, min_x, min_lrna_lambda, min_lambda, min_X, min_L, min_a, [0] * (m + r)])
-    upper = np.concatenate([max_y, max_x, max_lrna_lambda, max_lambda, max_X, max_L, max_a, partial_intent_sell_amts, [1] * r])
-
-     */
 
     let lower = ndarray::concatenate![
         Axis(0),
@@ -667,77 +686,113 @@ fn solve_inclusion_problem(
         Array1::ones(r).view()
     ];
 
-    let mut S = Array2::<f64>::zeros((n, k));
-    let mut S_upper = Array1::<f64>::zeros(n);
-    let x_zero = Array1::<f64>::zeros(4 * n + 3 * sigma + m);
-    let mut offset = 0;
-    for (s, amm) in p.amm_store.stablepools.iter().enumerate() {
-        let D0_prime = amm.d - amm.d / amm.ann();
-        let s0 = amm.shares;
-        let c = C[offset];
-        let sum_assets = amm.reserves.iter().sum::<f64>();
-        let denom = sum_assets - D0_prime;
-        let a0 = x_list.as_ref().unwrap()[s][4 * n + 2 * sigma + offset];
-        let X0 = x_list.as_ref().unwrap()[s][4 * n + offset];
-        let exp = (a0 / (1.0 + c * X0 / s0)).exp();
-        let term = (c / s0 - c * a0 / (s0 + c)) * exp;
-        let mut S_row = Array2::<f64>::zeros((1, k));
-        let grad_s = term + c * D0_prime / (s0 * denom);
-        let grads_i = amm
-            .assets
-            .iter()
-            .enumerate()
-            .map(|(idx, tkn)| -B.clone()[offset + idx])
-            .collect::<Vec<_>>();
-        let grad_a = exp;
-        S_row[[0, 4 * n + offset]] = grad_s;
-        S_row[[0, 4 * n + 2 * sigma + offset]] = grad_a;
-        for (l, tkn) in amm.assets.iter().enumerate() {
-            S_row[[0, 4 * n + offset + l + 1]] = grads_i[l] / denom;
+    let mut S = Array2::zeros((0, k));
+    let mut S_upper = Array1::from_vec(vec![]);
+    let x_zero = Array1::zeros(x_list.row(0).len());
+    let x_zero_2d = x_zero.insert_axis(Axis(0));
+    let x_stacked = concatenate(Axis(0), &[x_zero_2d.view(), x_list.view()])
+        .expect("Failed to stack x_zero and x_list");
+
+    for x in x_stacked.outer_iter() {
+        // First loop: Omnipool coefficients
+        for (i, tkn) in omnipool_asset_list.iter().enumerate() {
+            let mut S_row = Array2::zeros((1, k));
+            let mut S_row_upper = Array1::zeros(1);
+
+            let lrna_c = p.get_omnipool_lrna_coefs();
+            let asset_c = p.get_omnipool_asset_coefs();
+
+            let lrna_c_tkn = *lrna_c.get(tkn).expect("Token not in lrna_coefs");
+            let asset_c_tkn = *asset_c.get(tkn).expect("Token not in asset_coefs");
+
+            let grads_yi = -lrna_c_tkn - lrna_c_tkn * asset_c_tkn * x[n + i];
+            let grads_xi = -asset_c_tkn - lrna_c_tkn * asset_c_tkn * x[i];
+
+            S_row[[0, i]] = grads_yi;
+            S_row[[0, n + i]] = grads_xi;
+
+            let grad_dot_x = grads_yi * x[i] + grads_xi * x[n + i];
+            let g_neg = lrna_c_tkn * x[i]
+                + asset_c_tkn * x[n + i]
+                + lrna_c_tkn * asset_c_tkn * x[i] * x[n + i];
+            S_row_upper[0] = grad_dot_x + g_neg;
+
+            S = concatenate(Axis(0), &[S.view(), S_row.view()]).expect("Failed to stack S");
+            S_upper = concatenate(Axis(0), &[S_upper.view(), S_row_upper.view()])
+                .expect("Failed to concat S_upper");
         }
-        let grad_dot_x = grad_s * X0
-            + grad_a * a0
-            + grads_i
-                .iter()
-                .zip(amm.assets.iter().enumerate())
-                .map(|(&grad, (idx, tkn))| grad * x_list.as_ref().unwrap()[s][4 * n + offset + idx])
-                .sum::<f64>();
-        let sum_deltas = amm
-            .assets
-            .iter()
-            .enumerate()
-            .zip(1..)
-            .map(|((idx, tkn), l)| {
-                B[offset + l] * x_list.as_ref().unwrap()[s][4 * n + offset + idx]
-            })
-            .sum::<f64>();
-        let g_neg =
-            (1.0 + c * X0 / s0) * exp - sum_deltas / denom + D0_prime * c * X0 / (denom * s0) - 1.0;
-        let S_row_upper = Array1::from_elem(1, grad_dot_x + g_neg);
-        S = ndarray::concatenate![Axis(0), S.view(), S_row.view()];
-        S_upper = ndarray::concatenate![Axis(0), S_upper.view(), S_row_upper.view()];
-        for (l, tkn) in amm.assets.iter().enumerate() {
-            let mut S_row = Array2::<f64>::zeros((1, k));
-            let grad_s = term;
+
+        // Second loop: AMM constraints
+        let mut offset = 0;
+        for (_s, amm) in p.amm_store.stablepools.iter().enumerate() {
+            let D0_prime = amm.d - amm.d / amm.ann();
+            let s0 = amm.shares;
+            let c = C[offset];
+            let sum_assets: f64 = amm.reserves.iter().sum();
+            let denom = sum_assets - D0_prime;
+            let a0 = x[4 * n + 2 * sigma + offset];
+            let X0 = x[4 * n + offset];
+            let exp = (a0 / (1.0 + (c * X0 / s0))).exp();
+            let term = (c / s0 - c * a0 / (s0 + c)) * exp;
+
+            // Linearization of shares constraint
+            let mut S_row = Array2::zeros((1, k));
+            let grad_s = term + c * D0_prime / (s0 * denom);
+            let grads_i: Vec<f64> = (1..=amm.assets.len())
+                .map(|l| -B[offset + l] / denom)
+                .collect();
             let grad_a = exp;
-            let grad_x = -B[offset + l + 1] / amm.reserves[l];
+
             S_row[[0, 4 * n + offset]] = grad_s;
-            S_row[[0, 4 * n + 2 * sigma + offset + l + 1]] = grad_a;
-            S_row[[0, 4 * n + offset + l + 1]] = grad_x;
-            let ai = x_list.as_ref().unwrap()[s][4 * n + 2 * sigma + offset + l + 1];
+            S_row[[0, 4 * n + 2 * sigma + offset]] = grad_a;
+            for (l, _) in amm.assets.iter().enumerate() {
+                S_row[[0, 4 * n + offset + l + 1]] = grads_i[l];
+            }
+
             let grad_dot_x = grad_s * X0
-                + grad_a * ai
-                + grad_x * x_list.as_ref().unwrap()[s][4 * n + offset + l + 1];
-            let g_neg = (1.0 + c * X0 / s0) * exp
-                - B[offset + l + 1] * x_list.as_ref().unwrap()[s][4 * n + offset + l + 1]
-                    / amm.reserves[l]
+                + grad_a * a0
+                + (0..amm.assets.len())
+                    .map(|l| grads_i[l] * x[4 * n + offset + l + 1])
+                    .sum::<f64>();
+            let sum_deltas: f64 = (0..amm.assets.len())
+                .map(|l| B[offset + l + 1] * x[4 * n + offset + l + 1])
+                .sum();
+            let g_neg = (1.0 + c * X0 / s0) * exp - sum_deltas / denom
+                + D0_prime * c * X0 / (denom * s0)
                 - 1.0;
-            let S_row_upper = Array1::from_elem(1, grad_dot_x + g_neg);
-            S = ndarray::concatenate![Axis(0), S.view(), S_row.view()];
-            S_upper = ndarray::concatenate![Axis(0), S_upper.view(), S_row_upper.view()];
+            let mut S_row_upper = Array1::from_vec(vec![grad_dot_x + g_neg]);
+
+            S = concatenate(Axis(0), &[S.view(), S_row.view()]).expect("Failed to stack S");
+            S_upper = concatenate(Axis(0), &[S_upper.view(), S_row_upper.view()])
+                .expect("Failed to concat S_upper");
+
+            // Linearization of asset constraints
+            for (l, tkn) in amm.assets.iter().enumerate() {
+                let mut S_row = Array2::zeros((1, k));
+                let grad_s = term;
+                let grad_a = exp;
+                let grad_x = -B[offset + l + 1] / amm.reserves[l];
+
+                S_row[[0, 4 * n + offset]] = grad_s;
+                S_row[[0, 4 * n + 2 * sigma + offset + l + 1]] = grad_a;
+                S_row[[0, 4 * n + offset + l + 1]] = grad_x;
+
+                let ai = x[4 * n + 2 * sigma + offset + l + 1];
+                let grad_dot_x = grad_s * X0 + grad_a * ai + grad_x * x[4 * n + offset + l + 1];
+                let g_neg = (1.0 + c * X0 / s0) * exp
+                    - B[offset + l + 1] * x[4 * n + offset + l + 1] / amm.reserves[l]
+                    - 1.0;
+                let mut S_row_upper = Array1::from_vec(vec![grad_dot_x + g_neg]);
+
+                S = concatenate(Axis(0), &[S.view(), S_row.view()]).expect("Failed to stack S");
+                S_upper = concatenate(Axis(0), &[S_upper.view(), S_row_upper.view()])
+                    .expect("Failed to concat S_upper");
+            }
+
+            offset += 1 + amm.assets.len();
         }
-        offset += 1 + amm.assets.len();
     }
+
     /*
     S_lower = np.array([-inf]*len(S_upper))
 
@@ -833,9 +888,13 @@ fn solve_inclusion_problem(
     A_lower = np.concatenate([old_A_lower, S_lower, A_amm_lower, A3_lower, A5_lower, A7_lower, A8_lower])
      */
 
-    let old_A = old_A.unwrap_or_else(|| Array2::<f64>::zeros((0, k)));
-    let old_A_upper = old_A_upper.unwrap_or_else(|| Array1::<f64>::zeros(0));
-    let old_A_lower = old_A_lower.unwrap_or_else(|| Array1::<f64>::zeros(0));
+    //let old_A = old_A.unwrap_or_else(|| Array2::<f64>::zeros((0, k)));
+    //let old_A_upper = old_A_upper.unwrap_or_else(|| Array1::<f64>::zeros(0));
+    //let old_A_lower = old_A_lower.unwrap_or_else(|| Array1::<f64>::zeros(0));
+
+    let old_A = old_A.unwrap_or_else(|| Array2::zeros((0, k)));
+    let old_A_upper = old_A_upper.unwrap_or_else(|| Array1::from_vec(vec![]));
+    let old_A_lower = old_A_lower.unwrap_or_else(|| Array1::from_vec(vec![]));
 
     let A = ndarray::concatenate![
         Axis(0),
