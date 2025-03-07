@@ -451,7 +451,7 @@ fn solve_inclusion_problem(
         .into_iter()
         .chain(asset_list.iter().cloned())
         .collect::<Vec<_>>();
-    let (n, m, r, sigma) = (p.n, p.m, p.r, p.sigma_sum);
+    let (big_n, n, m, r, sigma) = (p.asset_count, p.n, p.m, p.r, p.sigma_sum);
     let k = 4 * n + 3 * sigma + m + r;
 
     let scaling = p.get_scaling();
@@ -826,8 +826,8 @@ fn solve_inclusion_problem(
     let A_amm_lower = Array1::<f64>::zeros(p.s);
 
     let A3 = p.get_profit_A();
-    let A3_upper = Array1::<f64>::from_elem(n + 1, inf);
-    let A3_lower = Array1::<f64>::zeros(n + 1);
+    let A3_upper = Array1::<f64>::from_elem(big_n + 1, inf);
+    let A3_lower = Array1::<f64>::zeros(big_n + 1);
 
     let mut A5 = Array2::<f64>::zeros((2 * n, k));
     for i in 0..n {
