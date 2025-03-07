@@ -266,22 +266,27 @@ impl SolverV4 {
 
             if status != ProblemStatus::PrimalInfeasible && status != ProblemStatus::DualInfeasible
             {
-                let x2 = Array2::from_shape_vec((1, 4 * n + 3 * sigma + m), x).unwrap();
-                x_list = ndarray::concatenate![Axis(0), x_list, x2];
+                let x_arr = Array1::from_vec(x);
+                let x_2d = x_arr.insert_axis(Axis(0));
+                x_list = ndarray::concatenate!(Axis(0), x_list.view(), x_2d.view());
             }
 
             // Get new cone constraint from current indicators
-            let BK: Vec<usize> = iter_indicators
+            let offset = 4 * n + 3 * sigma + m;
+            // Find indices where indicators == 1 and add the offset
+            let BK: Vec<usize> = indicators
                 .iter()
                 .enumerate()
                 .filter(|&(_, &val)| val == 1)
-                .map(|(idx, _)| idx + 4 * n + 3 * sigma + m) // TODO: idx here is not really correct?!!
+                .map(|(idx, _)| idx + offset)
                 .collect();
-            let NK: Vec<usize> = iter_indicators
+
+            // Find indices where indicators == 0 and add the offset
+            let NK: Vec<usize> = indicators
                 .iter()
                 .enumerate()
                 .filter(|&(_, &val)| val == 0)
-                .map(|(idx, _)| idx + 4 * n + 3 * sigma + m) // TODO: idx here is not really correct?!!
+                .map(|(idx, _)| idx + offset)
                 .collect();
             let mut IC_A = Array2::<f64>::zeros((1, k_milp));
             for &i in &BK {
