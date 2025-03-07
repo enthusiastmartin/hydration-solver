@@ -42,7 +42,7 @@ fn simple_scenario() {
         .into_iter()
         .filter(|asset| match asset {
             Asset::Omnipool(v) => accepted.contains(&v.asset_id),
-            Asset::StableSwap(v) => accepted.contains(&v.asset_id),
+            Asset::StableSwap(v) => v.pool_id == 100,
         })
         .collect::<Vec<Asset>>();
 

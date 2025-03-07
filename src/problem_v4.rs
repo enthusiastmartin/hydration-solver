@@ -19,6 +19,7 @@ pub enum ProblemStatus {
     PrimalInfeasible,
     DualInfeasible,
     InsufficientProgress,
+    NumericalError,
 }
 
 impl From<SolverStatus> for ProblemStatus {
@@ -30,6 +31,7 @@ impl From<SolverStatus> for ProblemStatus {
             SolverStatus::DualInfeasible => ProblemStatus::DualInfeasible,
             SolverStatus::Unsolved => ProblemStatus::NotSolved,
             SolverStatus::InsufficientProgress => ProblemStatus::InsufficientProgress,
+            //SolverStatus::NumericalError => ProblemStatus::NumericalError,
             _ => panic!("Unexpected solver status {:?}", value),
         }
     }
@@ -1452,11 +1454,11 @@ impl StepParams {
 
         let profit_X_coefs = problem.rho.clone() - problem.psi.clone();
 
-        //TODO: add fees somehow, this panics due to incompatible shapes!!
-        //let diag_fees = Array2::from_diag(&ndarray::Array1::from_vec(stableswap_fees));
-        //let profit_L_coefs = problem.psi.clone().dot(&diag_fees);
+        //TODO: this fails with incompatible shapes
+        //let stableswap_fees_flat_arr = Array1::from_vec(stableswap_fees.clone());
+        //let neg_fees = - &stableswap_fees_flat_arr;
+        //let profit_L_coefs = &problem.psi * &neg_fees.insert_axis(Axis(0));
         let profit_L_coefs = ndarray::Array2::zeros((problem.asset_count, problem.sigma_sum));
-
         let profit_a_coefs = ndarray::Array2::zeros((problem.asset_count, problem.u));
 
         let scaling = self.scaling.as_ref().unwrap();
