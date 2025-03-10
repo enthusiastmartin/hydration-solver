@@ -148,16 +148,12 @@ impl ICEProblemV4 {
             let amount_out = to_f64_by_decimals!(intent.amount_out, asset_out_info.decimals);
 
 
-            //TODO: small partial trade , flip to partial false
-            /* 
             let buy_amt_lrna_value = amount_out * self.price(HUB_ASSET_ID, intent.asset_out);
             let sell_amt_lrna_value = amount_in * self.price(HUB_ASSET_ID, intent.asset_in);
             
             if buy_amt_lrna_value < 1. && sell_amt_lrna_value < 1.{
                 intent.partial = false;
             }
-            */
-
 
             intents.push(intent.clone());
             intent_amounts.push((amount_in, amount_out));
@@ -1512,19 +1508,12 @@ impl StepParams {
         let vars_scaled = scaling_vars
             .iter()
             .map(|&v| v * 1.0 / (1.0 - problem.fee_match))
-            .collect::<Vec<_>>();
+            .collect::<Vec<f64>>();
 
         let phi = self.phi.as_ref().unwrap();
         let tau = self.tau.as_ref().unwrap();
-        let profit_d_coefs = if m != 0 {
-            //TODO: this was originally multiplying by Array2::from_diags() - verify
-            let scaled_phi =
-                phi.slice(s![1.., ..m]).to_owned() * &Array1::from(vars_scaled.clone());
-            tau.slice(s![1.., ..m]).to_owned() - scaled_phi
-        } else {
-            // empty
-            Array2::zeros((n, m))
-        };
+        let scaled_phi = phi.slice(s![1.., ..m]).to_owned() * &Array1::from(vars_scaled.clone());
+        let profit_d_coefs = tau.slice(s![1.., ..m]).to_owned() - scaled_phi;
 
         let buy_amts: Vec<FloatType> = problem
             .full_indices
@@ -1551,6 +1540,8 @@ impl StepParams {
 
         let l = profit_lrna_coefs.len();
         let profit_A_LRNA = Array2::from_shape_vec((1, l), profit_lrna_coefs).unwrap();
+
+
         let profit_A_assets = ndarray::concatenate![
             Axis(1),
             profit_y_coefs,
