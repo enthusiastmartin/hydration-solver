@@ -114,6 +114,7 @@ fn main() {
         Err(e) => {
             eprintln!("Error: {:?}", e);
             std::process::exit(1);
+            return;
         }
     };
     let intent_serialized = serde_json::to_string_pretty(&intents).unwrap();

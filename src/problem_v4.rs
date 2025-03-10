@@ -142,11 +142,24 @@ impl ICEProblemV4 {
                 intent.asset_out
             ))?;
             intent_ids.push(intent.intent_id);
-            intents.push(intent.clone());
+            let mut intent = intent.clone();
 
             let amount_in = to_f64_by_decimals!(intent.amount_in, asset_in_info.decimals);
             let amount_out = to_f64_by_decimals!(intent.amount_out, asset_out_info.decimals);
 
+
+            //TODO: small partial trade , flip to partial false
+            /* 
+            let buy_amt_lrna_value = amount_out * self.price(HUB_ASSET_ID, intent.asset_out);
+            let sell_amt_lrna_value = amount_in * self.price(HUB_ASSET_ID, intent.asset_in);
+            
+            if buy_amt_lrna_value < 1. && sell_amt_lrna_value < 1.{
+                intent.partial = false;
+            }
+            */
+
+
+            intents.push(intent.clone());
             intent_amounts.push((amount_in, amount_out));
 
             if intent.partial {
@@ -819,6 +832,10 @@ impl ICEProblemV4 {
     }
 
     pub(crate) fn price(&self, asset_a: AssetId, asset_b: AssetId) -> FloatType {
+        if asset_a == HUB_ASSET_ID {
+            let db = self.get_asset_pool_data(asset_b);
+            return db.hub_reserve / db.reserve;
+        }
         let da = self.get_asset_pool_data(asset_a);
         let db = self.get_asset_pool_data(asset_b);
         if asset_a == asset_b {
