@@ -67,6 +67,8 @@ pub(crate) fn process_data(info: Vec<crate::types::Asset>) -> AmmStore {
                 let reserve = asset.reserve as f64 / 10u128.pow(decimals as u32) as f64;
                 let fee = asset.fee.0 as f64 / asset.fee.1 as f64;
                 let amplification = asset.amplification;
+                let d = asset.d as f64 / 10u128.pow(18u32) as f64;
+                let shares = asset.shares as f64 / 10u128.pow(18u32) as f64;
 
                 stablepools
                     .entry(pool_id)
@@ -78,8 +80,8 @@ pub(crate) fn process_data(info: Vec<crate::types::Asset>) -> AmmStore {
                         pool_id,
                         assets: vec![asset_id],
                         reserves: vec![reserve],
-                        shares: 0.0, //TODO: add shares
-                        d: 0.0,      //TODO: add D
+                        shares,
+                        d,
                         fee,
                         amplification,
                     });

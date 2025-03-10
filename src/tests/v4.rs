@@ -3,8 +3,6 @@ use crate::types::*;
 use crate::v4::SolverV4;
 use std::time::Instant;
 
-const DATA_STRIPPED: &str = r##"[{"Omnipool":{"asset_id":0,"reserve":86787892196719287820,"hub_reserve":39349774149749914,"decimals":12,"fee":[1500,1000000],"hub_fee":[500,1000000]}},{"Omnipool":{"asset_id":28,"reserve":4556265753708959318053,"hub_reserve":9612298398114154,"decimals":15,"fee":[1500,1000000],"hub_fee":[500,1000000]}},{"Omnipool":{"asset_id":33,"reserve":6993437475117384536714797,"hub_reserve":13119005909651208,"decimals":18,"fee":[1500,1000000],"hub_fee":[500,1000000]}},{"Omnipool":{"asset_id":102,"reserve":14934592932069234854488578,"hub_reserve":589363778311062935,"decimals":18,"fee":[1500,1000000],"hub_fee":[500,1000000]}},{"Omnipool":{"asset_id":8,"reserve":5086493193287732516,"hub_reserve":29474085676606977,"decimals":12,"fee":[1500,1000000],"hub_fee":[500,1000000]}},{"Omnipool":{"asset_id":1000765,"reserve":10415120493009989839,"hub_reserve":36587988309690706,"decimals":18,"fee":[1500,1000000],"hub_fee":[500,1000000]}}]"##;
-
 #[test]
 fn simple_scenario() {
     let intents: &str = r##"[

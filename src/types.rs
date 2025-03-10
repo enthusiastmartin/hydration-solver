@@ -5,6 +5,10 @@ pub type AssetId = u32;
 pub type IntentId = u128;
 pub type FloatType = f64;
 
+/// Result returned by the solver containing resolved intents
+///
+/// # Fields
+/// * `resolved_intents` - Vector of resolved intents that were successfully matched and can be executed
 pub struct SolverResult {
     pub resolved_intents: Vec<ResolvedIntent>,
 }
